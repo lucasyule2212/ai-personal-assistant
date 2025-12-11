@@ -1,14 +1,14 @@
-import BM25 from "okapibm25";
-import fs from "fs/promises";
-import path from "path";
-import { embed, embedMany, cosineSimilarity } from "ai";
 import { google } from "@ai-sdk/google";
+import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+import { cosineSimilarity, embed, embedMany } from "ai";
+import fs from "fs/promises";
+import BM25 from "okapibm25";
+import path from "path";
 import {
   ensureEmbeddingsCacheDirectory,
   getCachedEmbedding,
   writeEmbeddingToCache,
 } from "./embeddings";
-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
 
 export interface Email {
   id: string;
@@ -43,14 +43,17 @@ const textSplitter = new RecursiveCharacterTextSplitter({
   separators: ["\n\n", "\n", " ", ""],
 });
 
+const RRF_K = 60;
+
 export const chunkEmails = async (emails: Email[]) => {
   const emailsWithChunks: EmailChunk[] = [];
+
   for (const email of emails) {
     const chunks = await textSplitter.splitText(email.body);
 
     chunks.forEach((chunk, chunkIndex) => {
       emailsWithChunks.push({
-        id: email.id,
+        id: `${email.id}-${chunkIndex}`,
         index: chunkIndex,
         subject: email.subject,
         chunk,
@@ -61,29 +64,27 @@ export const chunkEmails = async (emails: Email[]) => {
       });
     });
   }
+
   return emailsWithChunks;
 };
 
-const RRF_K = 60;
-
-export async function searchWithBM25(keywords: string[], emails: Email[]) {
-  // Combine subject + body for richer text corpus
-  const corpus = emails.map((email) => emailToText(email));
-
-  // BM25 returns score array matching corpus order
+export async function searchWithBM25(
+  keywords: string[],
+  emailChunks: EmailChunk[]
+) {
+  const corpus = emailChunks.map((emailChunk) => emailChunkToText(emailChunk));
   const scores: number[] = (BM25 as any)(corpus, keywords);
 
-  // Map scores to emails, sort descending
   return scores
-    .map((score, idx) => ({ score, email: emails[idx] }))
+    .map((score, idx) => ({ score, email: emailChunks[idx] }))
     .sort((a, b) => b.score - a.score);
 }
 
 export function reciprocalRankFusion(
-  rankings: { email: Email; score: number }[][]
-): { email: Email; score: number }[] {
+  rankings: { email: EmailChunk; score: number }[][]
+): { email: EmailChunk; score: number }[] {
   const rrfScores = new Map<string, number>();
-  const emailMap = new Map<string, Email>();
+  const emailMap = new Map<string, EmailChunk>();
 
   for (const ranking of rankings) {
     ranking.forEach((item, rank) => {
@@ -103,15 +104,18 @@ export function reciprocalRankFusion(
     }));
 }
 
-export async function searchWithEmbeddings(query: string, emails: Email[]) {
+export async function searchWithEmbeddings(
+  query: string,
+  emailChunks: EmailChunk[]
+) {
   const normalizedQuery = query.trim();
 
   if (!normalizedQuery) {
-    return emails.map((email) => ({ score: 0, email }));
+    return emailChunks.map((email) => ({ score: 0, email }));
   }
 
-  const emailEmbeddings = await loadOrGenerateEmbeddings(emails);
-  const emailById = new Map(emails.map((email) => [email.id, email]));
+  const emailEmbeddings = await loadOrGenerateEmbeddings(emailChunks);
+  const emailChunkById = new Map(emailChunks.map((email) => [email.id, email]));
 
   const { embedding: queryEmbedding } = await embed({
     model: google.textEmbeddingModel("text-embedding-004"),
@@ -120,7 +124,7 @@ export async function searchWithEmbeddings(query: string, emails: Email[]) {
 
   return emailEmbeddings
     .map(({ id, embedding }) => {
-      const email = emailById.get(id);
+      const email = emailChunkById.get(id);
 
       if (!email) {
         return null;
@@ -136,11 +140,12 @@ export async function searchWithEmbeddings(query: string, emails: Email[]) {
 }
 
 export async function searchWithRRF(query: string, emails: Email[]) {
+  const emailChunks = await chunkEmails(emails);
   const bm25Ranking = await searchWithBM25(
     query.toLowerCase().split(" "),
-    emails
+    emailChunks
   );
-  const embeddingsRanking = await searchWithEmbeddings(query, emails);
+  const embeddingsRanking = await searchWithEmbeddings(query, emailChunks);
 
   return reciprocalRankFusion([bm25Ranking, embeddingsRanking]);
 }
@@ -151,55 +156,56 @@ export async function loadEmails(): Promise<Email[]> {
   return JSON.parse(fileContent);
 }
 
-// Converts the email to a text string for indexing
-export const emailToText = (email: Email) => `${email.subject} ${email.body}`;
+export const emailChunkToText = (email: EmailChunk) =>
+  `${email.subject} ${email.chunk}`;
 
 export async function loadOrGenerateEmbeddings(
-  emails: Email[]
+  emailChunks: EmailChunk[]
 ): Promise<{ id: string; embedding: number[] }[]> {
-  // Ensure cache directory exists
   await ensureEmbeddingsCacheDirectory();
 
   const results: { id: string; embedding: number[] }[] = [];
-  const uncachedEmails: Email[] = [];
+  const uncachedEmailChunks: EmailChunk[] = [];
 
-  // Check cache for each email
-  for (const email of emails) {
-    const cachedEmbedding = await getCachedEmbedding(emailToText(email));
+  for (const emailChunk of emailChunks) {
+    const cachedEmbedding = await getCachedEmbedding(
+      emailChunkToText(emailChunk)
+    );
+
     if (cachedEmbedding) {
-      results.push({ id: email.id, embedding: cachedEmbedding });
+      results.push({ id: emailChunk.id, embedding: cachedEmbedding });
     } else {
-      // Cache miss - need to generate
-      uncachedEmails.push(email);
+      uncachedEmailChunks.push(emailChunk);
     }
   }
 
-  // Generate embeddings for uncached emails in batches of 99
-  if (uncachedEmails.length > 0) {
-    console.log(`Generating embeddings for ${uncachedEmails.length} emails`);
+  if (uncachedEmailChunks.length > 0) {
+    console.log(
+      `Generating embeddings for ${uncachedEmailChunks.length} emails`
+    );
 
     const BATCH_SIZE = 99;
-    for (let i = 0; i < uncachedEmails.length; i += BATCH_SIZE) {
-      const batch = uncachedEmails.slice(i, i + BATCH_SIZE);
+
+    for (let i = 0; i < uncachedEmailChunks.length; i += BATCH_SIZE) {
+      const batch = uncachedEmailChunks.slice(i, i + BATCH_SIZE);
       console.log(
         `Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(
-          uncachedEmails.length / BATCH_SIZE
+          uncachedEmailChunks.length / BATCH_SIZE
         )}`
       );
 
       const { embeddings } = await embedMany({
         model: google.textEmbeddingModel("text-embedding-004"),
-        values: batch.map((e) => emailToText(e)),
+        values: batch.map((emailChunk) => emailChunkToText(emailChunk)),
       });
 
-      // Write batch to cache
       for (let j = 0; j < batch.length; j++) {
-        const email = batch[j];
+        const emailChunk = batch[j];
         const embedding = embeddings[j];
 
-        await writeEmbeddingToCache(emailToText(email), embedding);
+        await writeEmbeddingToCache(emailChunkToText(emailChunk), embedding);
 
-        results.push({ id: email.id, embedding });
+        results.push({ id: emailChunk.id, embedding });
       }
     }
   }
