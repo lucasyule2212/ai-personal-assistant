@@ -1,0 +1,502 @@
+commit ed229918fa38c2e4167d5bdca702e5901f89f1b6
+Author: Matt Pocock <team@aihero.dev>
+Date:   Wed Nov 5 13:17:19 2025 +0000
+
+    06.02.01 Made /api/chat receive only one message
+
+diff --git a/src/app/api/chat/route.ts b/src/app/api/chat/route.ts
+index 916be6a..901dd70 100644
+--- a/src/app/api/chat/route.ts
++++ b/src/app/api/chat/route.ts
+@@ -46,74 +46,75 @@ const getTools = (messages: UIMessage[]) => ({
+ 
+ export async function POST(req: Request) {
+   const body: {
+-    messages: UIMessage[];
++    message: MyMessage;
+     id: string;
+   } = await req.json();
+ 
+   const chatId = body.id;
+ 
++  let chat = await getChat(chatId);
++
+   const validatedMessagesResult = await safeValidateUIMessages<MyMessage>({
+-    messages: body.messages,
++    messages: [...(chat?.messages ?? []), body.message],
+   });
+ 
+   if (!validatedMessagesResult.success) {
+     return new Response(validatedMessagesResult.error.message, { status: 400 });
+   }
+ 
+   const messages = validatedMessagesResult.data;
+ 
+-  let chat = await getChat(chatId);
+   const mostRecentMessage = messages[messages.length - 1];
+ 
+   if (!mostRecentMessage) {
+     return new Response("No messages provided", { status: 400 });
+   }
+ 
+   if (mostRecentMessage.role !== "user") {
+     return new Response("Last message must be from the user", {
+       status: 400,
+     });
+   }
+ 
+   const allMemories = await searchMemories({ messages });
+ 
+   const memories = allMemories.slice(0, MEMORIES_TO_USE);
+ 
+   const stream = createUIMessageStream<MyMessage>({
+     execute: async ({ writer }) => {
+       let generateTitlePromise: Promise<void> | undefined = undefined;
+ 
+       if (!chat) {
+         const newChat = await createChat({
+           id: chatId,
+           title: "Generating title...",
+           initialMessages: messages,
+         });
+         chat = newChat;
+ 
+         writer.write({
+           type: "data-frontend-action",
+           data: "refresh-sidebar",
+           transient: true,
+         });
+ 
+         generateTitlePromise = generateTitleForChat(messages)
+           .then((title) => {
+             return updateChatTitle(chatId, title);
+           })
+           .then(() => {
+             writer.write({
+               type: "data-frontend-action",
+               data: "refresh-sidebar",
+               transient: true,
+             });
+           });
+       } else {
+         await appendToChatMessages(chatId, [mostRecentMessage]);
+       }
+ 
+       const result = streamText({
+         model: google("gemini-2.5-flash"),
+         messages: convertToModelMessages(messages),
+         system: `
+ <task-context>
+diff --git a/src/app/chat.tsx b/src/app/chat.tsx
+index 65bad87..7be7101 100644
+--- a/src/app/chat.tsx
++++ b/src/app/chat.tsx
+@@ -45,397 +45,408 @@ import { Fragment, startTransition, useState } from "react";
+ import type { MyMessage } from "./api/chat/route";
+ import { useFocusWhenNoChatIdPresent } from "./use-focus-chat-when-new-chat-button-pressed";
+ import { Button } from "@/components/ui/button";
++import { DefaultChatTransport } from "ai";
+ 
+ export const Chat = (props: { chat: DB.Chat | null }) => {
+   const [backupChatId, setBackupChatId] = useState(crypto.randomUUID());
+   const [input, setInput] = useState("");
+   const searchParams = useSearchParams();
+   const router = useRouter();
+   const chatIdFromSearchParams = searchParams.get("chatId");
+ 
+   const chatIdInUse = chatIdFromSearchParams || backupChatId;
+   const { messages, sendMessage, status, regenerate } = useChat<MyMessage>({
+     id: chatIdInUse,
+     messages: props.chat?.messages || [],
+     onData: (message) => {
+       if (
+         message.type === "data-frontend-action" &&
+         message.data === "refresh-sidebar"
+       ) {
+         router.refresh();
+       }
+     },
+     onFinish: () => {
+       router.refresh();
+     },
+     generateId: () => crypto.randomUUID(),
++    transport: new DefaultChatTransport({
++      prepareSendMessagesRequest: (request) => {
++        return {
++          body: {
++            id: request.body?.id,
++            message: request.messages[request.messages.length - 1],
++          },
++        };
++      },
++    }),
+   });
+ 
+   const ref = useFocusWhenNoChatIdPresent(chatIdFromSearchParams);
+ 
+   const handleSubmit = (message: PromptInputMessage) => {
+     const hasText = Boolean(message.text);
+     const hasAttachments = Boolean(message.files?.length);
+ 
+     if (!(hasText || hasAttachments)) {
+       return;
+     }
+ 
+     startTransition(() => {
+       sendMessage(
+         {
+           text: message.text || "Sent with attachments",
+           files: message.files,
+         },
+         {
+           body: {
+             id: chatIdInUse,
+           },
+         }
+       );
+ 
+       setInput("");
+ 
+       if (!chatIdFromSearchParams) {
+         router.push(`/?chatId=${chatIdInUse}`);
+         setBackupChatId(crypto.randomUUID());
+       }
+     });
+   };
+   return (
+     <div className="relative flex-1 items-center flex flex-col min-h-0 w-full">
+       <Conversation className="w-full">
+         <ConversationContent className="max-w-4xl mx-auto w-full pb-40">
+           {messages.map((message) => (
+             <div key={message.id}>
+               {message.role === "assistant" &&
+                 message.parts.filter((part) => part.type === "source-url")
+                   .length > 0 && (
+                   <Sources>
+                     <SourcesTrigger
+                       count={
+                         message.parts.filter(
+                           (part) => part.type === "source-url"
+                         ).length
+                       }
+                     />
+                     {message.parts
+                       .filter((part) => part.type === "source-url")
+                       .map((part, i) => (
+                         <SourcesContent key={`${message.id}-${i}`}>
+                           <Source
+                             key={`${message.id}-${i}`}
+                             href={part.url}
+                             title={part.url}
+                           />
+                         </SourcesContent>
+                       ))}
+                   </Sources>
+                 )}
+               {message.parts.map((part, i) => {
+                 switch (part.type) {
+                   case "text":
+                     return (
+                       <Fragment key={`${message.id}-${i}`}>
+                         <Message from={message.role}>
+                           <MessageContent>
+                             <Response>{part.text}</Response>
+                           </MessageContent>
+                         </Message>
+                         {message.role === "assistant" &&
+                           i === messages.length - 1 && (
+                             <Actions className="mt-2">
+                               <Action
+                                 onClick={() => regenerate()}
+                                 label="Retry"
+                               >
+                                 <RefreshCcwIcon className="size-3" />
+                               </Action>
+                               <Action
+                                 onClick={() =>
+                                   navigator.clipboard.writeText(part.text)
+                                 }
+                                 label="Copy"
+                               >
+                                 <CopyIcon className="size-3" />
+                               </Action>
+                             </Actions>
+                           )}
+                       </Fragment>
+                     );
+                   case "reasoning":
+                     return (
+                       <Reasoning
+                         key={`${message.id}-${i}`}
+                         className="w-full"
+                         isStreaming={
+                           status === "streaming" &&
+                           i === message.parts.length - 1 &&
+                           message.id === messages.at(-1)?.id
+                         }
+                       >
+                         <ReasoningTrigger />
+                         <ReasoningContent>{part.text}</ReasoningContent>
+                       </Reasoning>
+                     );
+                   case "tool-search":
+                     return (
+                       <Tool
+                         key={`${message.id}-${i}`}
+                         className="w-full"
+                         defaultOpen={false}
+                       >
+                         <ToolHeader
+                           title="Search"
+                           type={part.type}
+                           state={part.state}
+                         />
+                         <ToolContent>
+                           <div className="space-y-4 p-4">
+                             {/* Input parameters */}
+                             {part.input && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Parameters
+                                 </h4>
+                                 <div className="text-sm">
+                                   {part.input.keywords && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Keywords:
+                                       </span>{" "}
+                                       {part.input.keywords.join(", ")}
+                                     </div>
+                                   )}
+                                   {part.input.searchQuery && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Search Query:
+                                       </span>{" "}
+                                       {part.input.searchQuery}
+                                     </div>
+                                   )}
+                                 </div>
+                               </div>
+                             )}
+ 
+                             {/* Email results */}
+                             {part.state === "output-available" &&
+                               part.output && (
+                                 <EmailResultsGrid emails={part.output.emails} />
+                               )}
+ 
+                             {/* Error state */}
+                             {part.state === "output-error" && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Error
+                                 </h4>
+                                 <div className="rounded-md bg-destructive/10 p-3 text-destructive text-sm">
+                                   {part.errorText}
+                                 </div>
+                               </div>
+                             )}
+                           </div>
+                         </ToolContent>
+                       </Tool>
+                     );
+                   case "tool-filterEmails":
+                     return (
+                       <Tool
+                         key={`${message.id}-${i}`}
+                         className="w-full"
+                         defaultOpen={false}
+                       >
+                         <ToolHeader
+                           title="Filter Emails"
+                           type={part.type}
+                           state={part.state}
+                         />
+                         <ToolContent>
+                           <div className="space-y-4 p-4">
+                             {/* Input parameters */}
+                             {part.input && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Filters
+                                 </h4>
+                                 <div className="text-sm space-y-1">
+                                   {part.input.from && (
+                                     <div>
+                                       <span className="font-medium">From:</span>{" "}
+                                       {part.input.from}
+                                     </div>
+                                   )}
+                                   {part.input.to && (
+                                     <div>
+                                       <span className="font-medium">To:</span>{" "}
+                                       {part.input.to}
+                                     </div>
+                                   )}
+                                   {part.input.contains && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Contains:
+                                       </span>{" "}
+                                       {part.input.contains}
+                                     </div>
+                                   )}
+                                   {part.input.before && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Before:
+                                       </span>{" "}
+                                       {new Date(
+                                         part.input.before
+                                       ).toLocaleString()}
+                                     </div>
+                                   )}
+                                   {part.input.after && (
+                                     <div>
+                                       <span className="font-medium">
+                                         After:
+                                       </span>{" "}
+                                       {new Date(
+                                         part.input.after
+                                       ).toLocaleString()}
+                                     </div>
+                                   )}
+                                   {part.input.limit && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Limit:
+                                       </span>{" "}
+                                       {part.input.limit}
+                                     </div>
+                                   )}
+                                 </div>
+                               </div>
+                             )}
+ 
+                             {/* Email results */}
+                             {part.state === "output-available" &&
+                               part.output && (
+                                 <EmailResultsGrid emails={part.output.emails} />
+                               )}
+ 
+                             {/* Error state */}
+                             {part.state === "output-error" && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Error
+                                 </h4>
+                                 <div className="rounded-md bg-destructive/10 p-3 text-destructive text-sm">
+                                   {part.errorText}
+                                 </div>
+                               </div>
+                             )}
+                           </div>
+                         </ToolContent>
+                       </Tool>
+                     );
+                   case "tool-getEmails":
+                     return (
+                       <Tool
+                         key={`${message.id}-${i}`}
+                         className="w-full"
+                         defaultOpen={true}
+                       >
+                         <ToolHeader
+                           title="Get Emails"
+                           type={part.type}
+                           state={part.state}
+                         />
+                         <ToolContent>
+                           <div className="space-y-4 p-4">
+                             {/* Input parameters */}
+                             {part.input && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Parameters
+                                 </h4>
+                                 <div className="text-sm space-y-1">
+                                   {part.input.ids && (
+                                     <div>
+                                       <span className="font-medium">
+                                         Email IDs:
+                                       </span>{" "}
+                                       {part.input.ids.length} email
+                                       {part.input.ids.length !== 1 ? "s" : ""}
+                                     </div>
+                                   )}
+                                   <div>
+                                     <span className="font-medium">
+                                       Include Thread:
+                                     </span>{" "}
+                                     {part.input.includeThread ? "Yes" : "No"}
+                                   </div>
+                                 </div>
+                               </div>
+                             )}
+ 
+                             {/* Full email content */}
+                             {part.state === "output-available" &&
+                               part.output && (
+                                 <FullEmailDisplay emails={part.output.emails} />
+                               )}
+ 
+                             {/* Error state */}
+                             {part.state === "output-error" && (
+                               <div className="space-y-2">
+                                 <h4 className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
+                                   Error
+                                 </h4>
+                                 <div className="rounded-md bg-destructive/10 p-3 text-destructive text-sm">
+                                   {part.errorText}
+                                 </div>
+                               </div>
+                             )}
+                           </div>
+                         </ToolContent>
+                       </Tool>
+                     );
+                   default:
+                     return null;
+                 }
+               })}
+             </div>
+           ))}
+           {status === "submitted" && <Loader />}
+         </ConversationContent>
+         <ConversationScrollButton />
+       </Conversation>
+       <div className="absolute bottom-0 flex items-center justify-center w-full sm:px-6 px-5">
+         <PromptInput
+           onSubmit={handleSubmit}
+           className="mb-4"
+           globalDrop
+           multiple
+         >
+           <PromptInputBody>
+             <PromptInputAttachments>
+               {(attachment) => <PromptInputAttachment data={attachment} />}
+             </PromptInputAttachments>
+             <PromptInputTextarea
+               onChange={(e) => setInput(e.target.value)}
+               value={input}
+               ref={ref}
+               autoFocus
+             />
+           </PromptInputBody>
+           <PromptInputToolbar>
+             <PromptInputTools>
+               <PromptInputActionMenu>
+                 <PromptInputActionMenuTrigger />
+                 <PromptInputActionMenuContent>
+                   <PromptInputActionAddAttachments />
+                 </PromptInputActionMenuContent>
+               </PromptInputActionMenu>
+             </PromptInputTools>
+             <PromptInputSubmit disabled={!input && !status} status={status} />
+           </PromptInputToolbar>
+         </PromptInput>
+       </div>
+     </div>
+   );
+ };

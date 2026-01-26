@@ -1,0 +1,492 @@
+commit a8a3270075065c17dc8618caa6e6c08575ab54f3
+Author: Matt Pocock <team@aihero.dev>
+Date:   Tue Nov 4 14:52:09 2025 +0000
+
+    04.01.03 Applied chunking functions to search algorithms
+
+diff --git a/src/app/api/chat/search-tool.ts b/src/app/api/chat/search-tool.ts
+index 7bad93c..6fde40e 100644
+--- a/src/app/api/chat/search-tool.ts
++++ b/src/app/api/chat/search-tool.ts
+@@ -1,6 +1,7 @@
+ import {
++  chunkEmails,
+   loadEmails,
+   reciprocalRankFusion,
+   searchWithBM25,
+   searchWithEmbeddings,
+ } from "@/app/search";
+@@ -10,50 +11,50 @@ import { z } from "zod";
+ export const searchTool = tool({
+   description:
+     "Search emails using both keyword and semantic search. Returns most relevant emails ranked by reciprocal rank fusion.",
+   inputSchema: z.object({
+     keywords: z
+       .array(z.string())
+       .describe(
+         "Exact keywords for BM25 search (names, amounts, specific terms)"
+       )
+       .optional(),
+     searchQuery: z
+       .string()
+       .describe("Natural language query for semantic search (broader concepts)")
+       .optional(),
+   }),
+   execute: async ({ keywords, searchQuery }) => {
+     console.log("Keywords:", keywords);
+     console.log("Search query:", searchQuery);
+ 
+     const emails = await loadEmails();
++    const emailChunks = await chunkEmails(emails);
+ 
+     // Use search algorithm from lesson 2.2
+-    const bm25Results = keywords ? await searchWithBM25(keywords, emails) : [];
++    const bm25Results = keywords
++      ? await searchWithBM25(keywords, emailChunks)
++      : [];
+     const embeddingResults = searchQuery
+-      ? await searchWithEmbeddings(searchQuery, emails)
++      ? await searchWithEmbeddings(searchQuery, emailChunks)
+       : [];
+     const rrfResults = reciprocalRankFusion([
+       bm25Results.slice(0, 30), // Only take the top 30 results from each search
+       embeddingResults.slice(0, 30), // Only take the top 30 results from each search
+     ]);
+ 
+     // Return top 10 full email objects
+     const topEmails = rrfResults
+       .slice(0, 10)
+       .filter((r) => r.score > 0) // Only return emails with a score greater than 0
+       .map((r) => ({
+         id: r.email.id,
+-        from: r.email.from,
+-        to: r.email.to,
+         subject: r.email.subject,
+-        body: r.email.body,
+-        timestamp: r.email.timestamp,
++        body: r.email.chunk,
+         score: r.score,
+       }));
+ 
+     return {
+       emails: topEmails,
+     };
+   },
+ });
+diff --git a/src/app/search.ts b/src/app/search.ts
+index 685b1d2..cf9b037 100644
+--- a/src/app/search.ts
++++ b/src/app/search.ts
+@@ -1,14 +1,14 @@
+-import BM25 from "okapibm25";
++import { google } from "@ai-sdk/google";
++import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
++import { cosineSimilarity, embed, embedMany } from "ai";
+ import fs from "fs/promises";
++import BM25 from "okapibm25";
+ import path from "path";
+-import { embed, embedMany, cosineSimilarity } from "ai";
+-import { google } from "@ai-sdk/google";
+ import {
+   ensureEmbeddingsCacheDirectory,
+   getCachedEmbedding,
+   writeEmbeddingToCache,
+ } from "./embeddings";
+-import { RecursiveCharacterTextSplitter } from "@langchain/textsplitters";
+ 
+ export interface Email {
+   id: string;
+@@ -64,16 +64,21 @@ export const chunkEmails = async (emails: Email[]) => {
+   return emailsWithChunks;
+ };
+ 
+-export async function searchWithBM25(keywords: string[], emails: Email[]) {
+-  // Combine subject + body for richer text corpus
+-  const corpus = emails.map((email) => emailToText(email));
++export async function searchWithBM25(
++  keywords: string[],
++  emailChunks: EmailChunk[]
++) {
++  // Combine subject + chunks for richer text corpus
++  const corpus = emailChunks.flatMap((emailChunk) =>
++    emailChunkToText(emailChunk)
++  );
+ 
+   // BM25 returns score array matching corpus order
+   const scores: number[] = (BM25 as any)(corpus, keywords);
+ 
+   // Map scores to emails, sort descending
+   return scores
+-    .map((score, idx) => ({ score, email: emails[idx] }))
++    .map((score, idx) => ({ score, email: emailChunks[idx] }))
+     .sort((a, b) => b.score - a.score);
+ }
+ 
+@@ -84,78 +89,86 @@ export async function loadEmails(): Promise<Email[]> {
+ }
+ 
+ // Converts the email to a text string for indexing
+-export const emailToText = (email: Email) => `${email.subject} ${email.body}`;
++export const emailChunkToText = (email: EmailChunk) =>
++  `${email.subject} ${email.chunk}`;
+ 
+ export async function loadOrGenerateEmbeddings(
+-  emails: Email[]
++  emailChunks: EmailChunk[]
+ ): Promise<{ id: string; embedding: number[] }[]> {
+   // Ensure cache directory exists
+   await ensureEmbeddingsCacheDirectory();
+ 
+   const results: { id: string; embedding: number[] }[] = [];
+-  const uncachedEmails: Email[] = [];
++  const uncachedEmailChunks: EmailChunk[] = [];
+ 
+   // Check cache for each email
+-  for (const email of emails) {
+-    const cachedEmbedding = await getCachedEmbedding(emailToText(email));
++  for (const emailChunk of emailChunks) {
++    const cachedEmbedding = await getCachedEmbedding(
++      emailChunkToText(emailChunk)
++    );
+     if (cachedEmbedding) {
+-      results.push({ id: email.id, embedding: cachedEmbedding });
++      results.push({ id: emailChunk.id, embedding: cachedEmbedding });
+     } else {
+       // Cache miss - need to generate
+-      uncachedEmails.push(email);
++      uncachedEmailChunks.push(emailChunk);
+     }
+   }
+ 
+   // Generate embeddings for uncached emails in batches of 99
+-  if (uncachedEmails.length > 0) {
+-    console.log(`Generating embeddings for ${uncachedEmails.length} emails`);
++  if (uncachedEmailChunks.length > 0) {
++    console.log(
++      `Generating embeddings for ${uncachedEmailChunks.length} emails`
++    );
+ 
+     const BATCH_SIZE = 99;
+-    for (let i = 0; i < uncachedEmails.length; i += BATCH_SIZE) {
+-      const batch = uncachedEmails.slice(i, i + BATCH_SIZE);
++    for (let i = 0; i < uncachedEmailChunks.length; i += BATCH_SIZE) {
++      const batch = uncachedEmailChunks.slice(i, i + BATCH_SIZE);
+       console.log(
+         `Processing batch ${Math.floor(i / BATCH_SIZE) + 1}/${Math.ceil(
+-          uncachedEmails.length / BATCH_SIZE
++          uncachedEmailChunks.length / BATCH_SIZE
+         )}`
+       );
+ 
+       const { embeddings } = await embedMany({
+         model: google.textEmbeddingModel("text-embedding-004"),
+-        values: batch.map((e) => emailToText(e)),
++        values: batch.map((e) => emailChunkToText(e)),
+       });
+ 
+       // Write batch to cache
+       for (let j = 0; j < batch.length; j++) {
+         const email = batch[j];
+         const embedding = embeddings[j];
+ 
+-        await writeEmbeddingToCache(emailToText(email), embedding);
++        await writeEmbeddingToCache(emailChunkToText(email), embedding);
+ 
+         results.push({ id: email.id, embedding });
+       }
+     }
+   }
+ 
+   return results;
+ }
+ 
+-export async function searchWithEmbeddings(query: string, emails: Email[]) {
++export async function searchWithEmbeddings(
++  query: string,
++  emailChunks: EmailChunk[]
++) {
+   // Load cached embeddings
+-  const emailEmbeddings = await loadOrGenerateEmbeddings(emails);
++  const emailEmbeddings = await loadOrGenerateEmbeddings(emailChunks);
+ 
+   // Generate query embedding
+   const { embedding: queryEmbedding } = await embed({
+     model: google.textEmbeddingModel("text-embedding-004"),
+     value: query,
+   });
+ 
+   // Calculate similarity scores
+   const results = emailEmbeddings.map(({ id, embedding }) => {
+-    const email = emails.find((e) => e.id === id)!;
++    const email = emailChunks.find((e) => e.id === id)!;
+     const score = cosineSimilarity(queryEmbedding, embedding);
+     return { score, email };
+   });
+ 
+   // Sort by similarity descending
+   return results.sort((a, b) => b.score - a.score);
+ }
+@@ -163,39 +176,42 @@ export async function searchWithEmbeddings(query: string, emails: Email[]) {
+ const RRF_K = 60;
+ 
+ export function reciprocalRankFusion(
+-  rankings: { email: Email; score: number }[][]
+-): { email: Email; score: number }[] {
++  rankings: { email: EmailChunk; score: number }[][]
++): { email: EmailChunk; score: number }[] {
+   const rrfScores = new Map<string, number>();
+-  const emailMap = new Map<string, Email>();
++  const emailMap = new Map<string, EmailChunk>();
+ 
+   // Process each ranking list (BM25 and embeddings)
+   rankings.forEach((ranking) => {
+     ranking.forEach((item, rank) => {
+-      const currentScore = rrfScores.get(item.email.id) || 0;
++      const emailChunkId = `${item.email.id}-${item.email.index}`;
++
++      const currentScore = rrfScores.get(emailChunkId) || 0;
+ 
+       // Position-based scoring: 1/(k+rank)
+       const contribution = 1 / (RRF_K + rank);
+-      rrfScores.set(item.email.id, currentScore + contribution);
++      rrfScores.set(emailChunkId, currentScore + contribution);
+ 
+-      emailMap.set(item.email.id, item.email);
++      emailMap.set(emailChunkId, item.email);
+     });
+   });
+ 
+   // Sort by combined RRF score descending
+   return Array.from(rrfScores.entries())
+     .sort(([, scoreA], [, scoreB]) => scoreB - scoreA)
+-    .map(([emailId, score]) => ({
++    .map(([emailChunkId, score]) => ({
+       score,
+-      email: emailMap.get(emailId)!,
++      email: emailMap.get(emailChunkId)!,
+     }));
+ }
+ 
+ export const searchWithRRF = async (query: string, emails: Email[]) => {
++  const emailChunks = await chunkEmails(emails);
+   const bm25Ranking = await searchWithBM25(
+     query.toLowerCase().split(" "),
+-    emails
++    emailChunks
+   );
+-  const embeddingsRanking = await searchWithEmbeddings(query, emails);
++  const embeddingsRanking = await searchWithEmbeddings(query, emailChunks);
+   const rrfRanking = reciprocalRankFusion([bm25Ranking, embeddingsRanking]);
+   return rrfRanking;
+ };
+diff --git a/src/app/search/email-list.tsx b/src/app/search/email-list.tsx
+index dbbd803..b02a068 100644
+--- a/src/app/search/email-list.tsx
++++ b/src/app/search/email-list.tsx
+@@ -8,77 +8,82 @@ import { useState } from "react";
+ type Email = {
+   id: string;
+   from: string;
+   subject: string;
+   preview: string;
+   content: string;
+   date: string;
++  chunkIndex: number;
++  totalChunks: number;
+ };
+ 
+ function EmailCard({ email }: { email: Email }) {
+   const [expanded, setExpanded] = useState(false);
+ 
+   const formatDate = (dateString: string) => {
+     const date = new Date(dateString);
+     return new Intl.DateTimeFormat("en-US", {
+       month: "short",
+       day: "numeric",
+       year: "numeric",
+       hour: "numeric",
+       minute: "2-digit",
+     }).format(date);
+   };
+ 
+   return (
+     <Card className="p-4 hover:shadow-md transition-shadow">
+       <div className="flex items-start gap-3">
+         <div className="mt-0.5 p-1.5 rounded-full bg-primary/10">
+           <MailIcon className="h-4 w-4 text-primary" />
+         </div>
+         <div className="flex-1 min-w-0">
+           <div className="flex items-start justify-between gap-4 mb-1">
+             <div className="flex-1 min-w-0">
+-              <h3 className="font-semibold text-base mb-0.5">{email.subject}</h3>
++              <h3 className="font-semibold text-base mb-0.5">
++                {email.subject} (Chunk {email.chunkIndex + 1} of{" "}
++                {email.totalChunks})
++              </h3>
+               <p className="text-xs text-muted-foreground">{email.from}</p>
+             </div>
+             <span className="text-xs text-muted-foreground whitespace-nowrap">
+               {formatDate(email.date)}
+             </span>
+           </div>
+ 
+           <p className="text-sm text-foreground/80 mt-2 line-clamp-2">
+             {email.preview}
+           </p>
+ 
+           {expanded && (
+             <div className="mt-3 pt-3 border-t">
+               <div className="prose prose-sm max-w-none dark:prose-invert">
+                 <pre className="whitespace-pre-wrap font-sans text-sm leading-relaxed">
+                   {email.content}
+                 </pre>
+               </div>
+             </div>
+           )}
+ 
+           <Button
+             variant="ghost"
+             size="sm"
+             onClick={() => setExpanded(!expanded)}
+             className="mt-2 h-8 text-primary hover:text-primary px-2"
+           >
+             {expanded ? (
+               <>
+                 <ChevronUpIcon className="h-3.5 w-3.5 mr-1" />
+                 Show less
+               </>
+             ) : (
+               <>
+                 <ChevronDownIcon className="h-3.5 w-3.5 mr-1" />
+                 See more
+               </>
+             )}
+           </Button>
+         </div>
+       </div>
+     </Card>
+   );
+ }
+@@ -86,21 +91,19 @@ function EmailCard({ email }: { email: Email }) {
+ export function EmailList({ emails }: { emails: Email[] }) {
+   if (emails.length === 0) {
+     return (
+       <div className="text-center py-12">
+         <MailIcon className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+         <h3 className="text-lg font-semibold mb-2">No emails found</h3>
+-        <p className="text-muted-foreground">
+-          Try adjusting your search query
+-        </p>
++        <p className="text-muted-foreground">Try adjusting your search query</p>
+       </div>
+     );
+   }
+ 
+   return (
+     <div className="space-y-3">
+       {emails.map((email) => (
+         <EmailCard key={email.id} email={email} />
+       ))}
+     </div>
+   );
+ }
+diff --git a/src/app/search/page.tsx b/src/app/search/page.tsx
+index 89c3e09..7eb83eb 100644
+--- a/src/app/search/page.tsx
++++ b/src/app/search/page.tsx
+@@ -11,91 +11,93 @@ import { SearchPagination } from "./search-pagination";
+ export default async function SearchPage(props: {
+   searchParams: Promise<{ q?: string; page?: string; perPage?: string }>;
+ }) {
+   const searchParams = await props.searchParams;
+   const query = searchParams.q || "";
+   const page = Number(searchParams.page) || 1;
+   const perPage = Number(searchParams.perPage) || 10;
+ 
+   const allEmails = await loadEmails();
+ 
+   const emailsWithScores = await searchWithRRF(query, allEmails);
+ 
+   // Transform emails to match the expected format
+   const transformedEmails = emailsWithScores
+     .map(({ email, score }) => ({
+       id: email.id,
+       from: email.from,
+       subject: email.subject,
+-      preview: email.body.substring(0, 100) + "...",
+-      content: email.body,
++      preview: email.chunk.substring(0, 100) + "...",
++      content: email.chunk,
++      chunkIndex: email.index,
++      totalChunks: email.totalChunks,
+       date: email.timestamp,
+       score: score,
+     }))
+     .sort((a, b) => b.score - a.score);
+ 
+   // Filter emails based on search query
+   const filteredEmails = query
+     ? transformedEmails.filter((email) => email.score > 0)
+     : transformedEmails;
+ 
+   const totalPages = Math.ceil(filteredEmails.length / perPage);
+   const startIndex = (page - 1) * perPage;
+   const paginatedEmails = filteredEmails.slice(
+     startIndex,
+     startIndex + perPage
+   );
+   const allChats = await loadChats();
+   const chats = allChats.slice(0, CHAT_LIMIT);
+   const memories = await loadMemories();
+ 
+   return (
+     <>
+       <SideBar chats={chats} memories={memories} chatIdFromSearchParams={""} />
+       <div className="h-screen flex flex-col w-full">
+         <TopBar showSidebar={true} title="Data" />
+         <div className="flex-1">
+           <div className="max-w-4xl mx-auto xl:px-2 px-6 py-6">
+             <div className="mb-6">
+               <p className="text-sm text-muted-foreground">
+                 Search through your email archive
+               </p>
+             </div>
+ 
+             <div className="flex md:items-center md:justify-between gap-4 flex-col md:flex-row">
+               <SearchInput initialQuery={query} currentPerPage={perPage} />
+               <PerPageSelector currentPerPage={perPage} query={query} />
+             </div>
+ 
+             <div className="mt-6">
+               <div className="flex items-center justify-between mb-3">
+                 <p className="text-sm text-muted-foreground">
+                   {query ? (
+                     <>
+                       Found {filteredEmails.length} result
+                       {filteredEmails.length !== 1 ? "s" : ""} for &ldquo;
+                       {query}
+                       &rdquo;
+                     </>
+                   ) : (
+                     <>Found {filteredEmails.length} emails</>
+                   )}
+                 </p>
+               </div>
+               <EmailList emails={paginatedEmails} />
+               {totalPages > 1 && (
+                 <div className="mt-6">
+                   <SearchPagination
+                     currentPage={page}
+                     totalPages={totalPages}
+                     query={query}
+                     perPage={perPage}
+                   />
+                 </div>
+               )}
+             </div>
+           </div>
+         </div>
+       </div>
+     </>
+   );
+ }
