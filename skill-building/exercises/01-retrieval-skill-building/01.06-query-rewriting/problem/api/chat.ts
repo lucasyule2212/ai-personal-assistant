@@ -10,42 +10,94 @@ import {
 import { z } from 'zod';
 import { searchEmails } from './search.ts';
 
+export const QUERY_REWRITER_SYSTEM_PROMPT = `
+  You are a helpful email assistant, able to search emails for information.
+  Your job is to generate a list of keywords which will be used to search the emails.
+  You should also generate a search query which will be used for semantic search.
+  The keywords should use exact terminology. The search query can be broader and more conceptual.
+`;
+
+export const QUERY_REWRITE_SCHEMA = z.object({
+  keywords: z
+    .array(z.string())
+    .describe(
+      'A list of keywords to search the emails with. Use these for exact terminology.',
+    ),
+  searchQuery: z
+    .string()
+    .describe(
+      'A broader search query for semantic search over email embeddings. It can use more general concepts than the keywords.',
+    ),
+});
+
+type QueryRewrite = z.infer<typeof QUERY_REWRITE_SCHEMA>;
+
+type GenerateSearchTermsDeps = {
+  convertMessagesFn?: typeof convertToModelMessages;
+  generateObjectFn?: typeof generateObject;
+  model?: unknown;
+};
+
+type SearchResult = Awaited<
+  ReturnType<typeof searchEmails>
+>[number];
+
+type TopSearchResultsDeps = {
+  limit?: number;
+  searchEmailsFn?: typeof searchEmails;
+};
+
+export const generateSearchTermsFromMessages = async (
+  messages: UIMessage[],
+  deps: GenerateSearchTermsDeps = {},
+): Promise<QueryRewrite> => {
+  const {
+    convertMessagesFn = convertToModelMessages,
+    generateObjectFn = generateObject,
+    model = google('gemini-2.5-flash'),
+  } = deps;
+
+  const result = await generateObjectFn({
+    model: model as never,
+    system: QUERY_REWRITER_SYSTEM_PROMPT,
+    schema: QUERY_REWRITE_SCHEMA,
+    messages: convertMessagesFn(messages),
+  });
+
+  console.log('Keywords:', result.object.keywords);
+  console.log('Search Query:', result.object.searchQuery);
+
+  return result.object;
+};
+
+export const getTopSearchResults = async (
+  searchTerms: QueryRewrite,
+  deps: TopSearchResultsDeps = {},
+): Promise<SearchResult[]> => {
+  const { limit = 5, searchEmailsFn = searchEmails } = deps;
+
+  const searchResults = await searchEmailsFn({
+    keywordsForBM25: searchTerms.keywords,
+    embeddingsQuery: searchTerms.searchQuery,
+  });
+
+  const topSearchResults = searchResults.slice(0, limit);
+
+  console.log(topSearchResults.map((result) => result.email.id));
+
+  return topSearchResults;
+};
+
 export const POST = async (req: Request): Promise<Response> => {
   const body: { messages: UIMessage[] } = await req.json();
   const { messages } = body;
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      // TODO: Change the generateObject call so that it generates a search query in
-      // addition to the keywords. This will be used for semantic search, which will be a
-      // big improvement over passing the entire conversation history.
-      const keywords = await generateObject({
-        model: google('gemini-2.5-flash'),
-        system: `You are a helpful email assistant, able to search emails for information.
-          Your job is to generate a list of keywords which will be used to search the emails.
-        `,
-        schema: z.object({
-          keywords: z
-            .array(z.string())
-            .describe(
-              'A list of keywords to search the emails with. Use these for exact terminology.',
-            ),
-        }),
-        messages: convertToModelMessages(messages),
-      });
-
-      console.dir(keywords.object, { depth: null });
-
-      const searchResults = await searchEmails({
-        keywordsForBM25: keywords.object.keywords,
-        embeddingsQuery: TODO,
-      });
-
-      const topSearchResults = searchResults.slice(0, 5);
-
-      console.log(
-        topSearchResults.map((result) => result.email.id),
-      );
+      const searchTerms =
+        await generateSearchTermsFromMessages(messages);
+      const topSearchResults =
+        await getTopSearchResults(searchTerms);
 
       const emailSnippets = [
         '## Email Snippets',
