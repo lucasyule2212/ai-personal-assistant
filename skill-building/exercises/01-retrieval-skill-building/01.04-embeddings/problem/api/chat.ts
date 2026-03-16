@@ -8,7 +8,9 @@ import {
 } from 'ai';
 import { searchEmails } from './create-embeddings.ts';
 
-const formatMessageHistory = (messages: UIMessage[]) => {
+export const formatMessageHistory = (
+  messages: UIMessage[],
+) => {
   return messages
     .map((message) => {
       return `${message.role}: ${message.parts
@@ -24,18 +26,48 @@ const formatMessageHistory = (messages: UIMessage[]) => {
     .join('\n');
 };
 
+type SearchResult = Awaited<
+  ReturnType<typeof searchEmails>
+>[number];
+
+type TopSearchResultsDeps = {
+  limit?: number;
+  searchEmailsFn?: typeof searchEmails;
+};
+
+export const getTopSearchResults = async (
+  messages: UIMessage[],
+  deps: TopSearchResultsDeps = {},
+): Promise<SearchResult[]> => {
+  const {
+    limit = 5,
+    searchEmailsFn = searchEmails,
+  } = deps;
+
+  const searchResults = await searchEmailsFn(
+    formatMessageHistory(messages),
+  );
+
+  const topSearchResults = searchResults.slice(0, limit);
+
+  console.log(
+    topSearchResults.map(
+      (result) => `${result.email.subject} (${result.score})`,
+    ),
+  );
+
+  return topSearchResults;
+};
+
 export const POST = async (req: Request): Promise<Response> => {
   const body: { messages: UIMessage[] } = await req.json();
   const { messages } = body;
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      // TODO: call the searchEmails function with the
-      // conversation history to get the search results
-      const searchResults = TODO;
-
-      // TODO: take the top X search results
-      const topSearchResults = TODO;
+      const topSearchResults = await getTopSearchResults(
+        messages,
+      );
 
       const emailSnippets = [
         '## Emails',

@@ -55,6 +55,30 @@ Practical guidance:
 - Do not over-mock retrieval or ranking code. If BM25, embeddings, or dataset search are the feature, run the real implementation in tests.
 - Add targeted logs while developing, but keep tests readable and remove noise when the behavior is verified.
 
+## Test Readability Standard
+
+Write tests so a new contributor can learn the feature by reading the test file top to bottom.
+
+- Prefer test names that explain the behavior and the reason it matters, not just the function name.
+- Use small named fixtures instead of anonymous inline objects when the data carries meaning.
+- Add short comments only where they teach intent:
+  - what is intentionally mocked
+  - what behavior is under test
+  - why a setup detail matters
+- Favor a clear Given/When/Then flow in the test body, even if that is expressed through comments rather than helper functions.
+- If a test file mixes unit and integration coverage, make that distinction explicit in comments or `describe` blocks.
+- When touching an existing test, improve clarity as you go. Do not rewrite the whole file unnecessarily, but leave it easier to understand than you found it.
+
+For this repo specifically:
+
+- Route handlers should usually expose one or two small helpers so tests can focus on formatting, ranking, prompt assembly, or result trimming without booting the server.
+- Mock provider SDK calls only when the test is about our wiring. Use real providers when the feature being taught is the provider behavior itself.
+- Prefer assertions that show the full important payload, especially for prompt text, embedding input strings, ranking output, and search query construction.
+- If a test is meant to teach, prefer runtime logs over inline comments.
+- Log the process in a stable structure such as `GIVEN`, `WHEN`, `THEN`.
+- Make the logs show the input fixture, the important intermediate payload, and the final output.
+- Keep logs focused on the behavior under test, not every implementation detail.
+
 ## Architecture
 
 ### Exercise Structure

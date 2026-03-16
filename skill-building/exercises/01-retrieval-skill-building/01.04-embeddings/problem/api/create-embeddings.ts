@@ -72,7 +72,7 @@ export const getExistingEmbeddings = async (
 };
 
 const myEmbeddingModel = google.textEmbeddingModel(
-  'text-embedding-004',
+  'gemini-embedding-001',
 );
 
 export const embedEmails = async (
@@ -143,7 +143,7 @@ export const searchEmails = async (query: string) => {
 
 export const EMBED_CACHE_KEY = 'emails-google';
 
-const embedLotsOfText = async (
+export const embedLotsOfText = async (
   emails: Email[],
 ): Promise<
   {
@@ -151,19 +151,34 @@ const embedLotsOfText = async (
     embedding: number[];
   }[]
 > => {
-  // TODO: Implement this function by using the embedMany function
-  throw new Error('Not implemented');
+  const result = await embedMany({
+    model: myEmbeddingModel,
+    values: emails.map(
+      (email) => `${email.subject} ${email.body}`,
+    ),
+    maxRetries: 0,
+  });
+
+  return result.embeddings.map((embedding, index) => ({
+    id: emails[index]!.id,
+    embedding,
+  }));
 };
 
-const embedOnePieceOfText = async (
+export const embedOnePieceOfText = async (
   text: string,
 ): Promise<number[]> => {
-  // TODO: Implement this function by using the embed function
+  const result = await embed({
+    model: myEmbeddingModel,
+    value: text,
+  });
+
+  return result.embedding;
 };
 
-const calculateScore = (
+export const calculateScore = (
   queryEmbedding: number[],
   embedding: number[],
 ): number => {
-  // TODO: Implement this function by using the cosineSimilarity function
+  return cosineSimilarity(queryEmbedding, embedding);
 };
