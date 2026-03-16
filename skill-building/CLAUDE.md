@@ -28,6 +28,33 @@ pnpm exercise <exercise-number>
 pnpm install
 ```
 
+## TDD Approach
+
+When implementing exercises, prefer a tight red-green-refactor loop:
+
+1. Write the smallest failing test that proves the behavior you want.
+2. Implement the minimum code needed to make it pass.
+3. Refactor only after the behavior is covered.
+
+For this repo, split tests by responsibility:
+
+- Use fast unit tests for deterministic logic such as ranking, filtering, formatting, parsing, and prompt assembly.
+- Use integration tests for AI-dependent behavior such as `generateObject`, `streamText`, embeddings, and provider-specific responses.
+- When an exercise depends on a real model call, prefer hitting the real provider instead of mocking the SDK call away entirely.
+
+For live AI integration tests:
+
+- Load credentials from `skill-building/.env` or the shell environment.
+- Skip the test when the required API key is missing rather than failing the whole suite.
+- Keep assertions broad and behavior-focused because model outputs vary. Assert on shape, presence of key terms, and relevance of results, not exact wording.
+- Keep the prompt and fixture data stable so test failures are meaningful.
+
+Practical guidance:
+
+- Extract small helpers from route handlers so core behavior can be tested without booting the whole app.
+- Do not over-mock retrieval or ranking code. If BM25, embeddings, or dataset search are the feature, run the real implementation in tests.
+- Add targeted logs while developing, but keep tests readable and remove noise when the behavior is verified.
+
 ## Architecture
 
 ### Exercise Structure
