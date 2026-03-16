@@ -3,14 +3,77 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  generateObject,
   streamText,
   type UIMessage,
 } from 'ai';
+import z from 'zod';
+import { searchEmails } from './bm25.ts';
 
-const KEYWORD_GENERATOR_SYSTEM_PROMPT = `
+export const KEYWORD_GENERATOR_SYSTEM_PROMPT = `
   You are a helpful email assistant, able to search through emails for information.
   Your job is to generate a list of keywords which will be used to search emails.
 `;
+
+type GenerateKeywordsDeps = {
+  convertMessagesFn?: typeof convertToModelMessages;
+  generateObjectFn?: typeof generateObject;
+  model?: unknown;
+};
+
+type SearchResult = Awaited<ReturnType<typeof searchEmails>>[number];
+
+type TopSearchResultsDeps = {
+  limit?: number;
+  searchEmailsFn?: typeof searchEmails;
+};
+
+export const generateKeywordsFromMessages = async (
+  messages: UIMessage[],
+  deps: GenerateKeywordsDeps = {},
+) => {
+  const {
+    convertMessagesFn = convertToModelMessages,
+    generateObjectFn = generateObject,
+    model = google('gemini-2.5-flash'),
+  } = deps;
+
+  const result = await generateObjectFn({
+    model: model as never,
+    system: KEYWORD_GENERATOR_SYSTEM_PROMPT,
+    schema: z.object({
+      keywords: z.array(z.string()),
+    }),
+    messages: convertMessagesFn(messages),
+  });
+
+  const keywords = result.object.keywords;
+
+  console.log('Generated keywords:', keywords);
+
+  return keywords;
+};
+
+export const getTopSearchResults = async (
+  keywords: string[],
+  deps: TopSearchResultsDeps = {},
+): Promise<SearchResult[]> => {
+  const {
+    limit = 10,
+    searchEmailsFn = searchEmails,
+  } = deps;
+
+  const topSearchResults = (await searchEmailsFn(keywords))
+    .filter((result) => result.score > 0)
+    .slice(0, limit);
+
+  console.log(
+    'Top results:',
+    topSearchResults.map((result) => result.email?.subject),
+  );
+
+  return topSearchResults;
+};
 
 export const POST = async (req: Request): Promise<Response> => {
   const body: { messages: UIMessage[] } = await req.json();
@@ -18,13 +81,11 @@ export const POST = async (req: Request): Promise<Response> => {
 
   const stream = createUIMessageStream({
     execute: async ({ writer }) => {
-      // TODO: Implement a keyword generator that generates a list of keywords
-      // based on the conversation history. Use generateObject to do this.
-      const keywords = TODO;
-
-      // TODO: Use the searchEmails function to get the top X number of
-      // search results based on the keywords
-      const topSearchResults = TODO;
+      const keywords =
+        await generateKeywordsFromMessages(messages);
+      const topSearchResults = await getTopSearchResults(
+        keywords,
+      );
 
       const emailSnippets = [
         '## Email Snippets',
