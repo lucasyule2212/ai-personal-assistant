@@ -1,0 +1,59 @@
+import {
+  loadEmails,
+  reciprocalRankFusion,
+  searchWithBM25,
+  searchWithEmbeddings,
+} from "@/app/search";
+import { tool } from "ai";
+import { z } from "zod";
+
+export const searchTool = tool({
+  description:
+    "Search emails using both keyword and semantic search. Returns most relevant emails ranked by reciprocal rank fusion.",
+  inputSchema: z.object({
+    keywords: z
+      .array(z.string())
+      .describe("Exact keywords for BM25 search (names, amounts, specific terms)")
+      .optional(),
+    searchQuery: z
+      .string()
+      .describe("Natural language query for semantic search (broader concepts)")
+      .optional(),
+  }),
+  execute: async ({ keywords, searchQuery }) => {
+    console.log("Keywords:", keywords);
+    console.log("Search query:", searchQuery);
+
+    const emails = await loadEmails();
+
+    const bm25Results =
+      keywords && keywords.length > 0
+        ? await searchWithBM25(keywords, emails)
+        : [];
+    const embeddingResults =
+      searchQuery && searchQuery.trim()
+        ? await searchWithEmbeddings(searchQuery, emails)
+        : [];
+    const rrfResults = reciprocalRankFusion([
+      bm25Results.slice(0, 30),
+      embeddingResults.slice(0, 30),
+    ]);
+
+    const topEmails = rrfResults
+      .slice(0, 10)
+      .filter((result) => result.score > 0)
+      .map((result) => ({
+        id: result.email.id,
+        from: result.email.from,
+        to: result.email.to,
+        subject: result.email.subject,
+        body: result.email.body,
+        timestamp: result.email.timestamp,
+        score: result.score,
+      }));
+
+    return {
+      emails: topEmails,
+    };
+  },
+});
