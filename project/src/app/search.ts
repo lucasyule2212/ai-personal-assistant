@@ -1,7 +1,7 @@
 import BM25 from "okapibm25";
 import fs from "fs/promises";
 import path from "path";
-import { embedMany } from "ai";
+import { embed, embedMany, cosineSimilarity } from "ai";
 import { google } from "@ai-sdk/google";
 
 export interface Email {
@@ -30,6 +30,38 @@ export async function searchWithBM25(keywords: string[], emails: Email[]) {
   // Map scores to emails, sort descending
   return scores
     .map((score, idx) => ({ score, email: emails[idx] }))
+    .sort((a, b) => b.score - a.score);
+}
+
+export async function searchWithEmbeddings(query: string, emails: Email[]) {
+  const normalizedQuery = query.trim();
+
+  if (!normalizedQuery) {
+    return emails.map((email) => ({ score: 0, email }));
+  }
+
+  const emailEmbeddings = await loadOrGenerateEmbeddings(emails);
+  const emailById = new Map(emails.map((email) => [email.id, email]));
+
+  const { embedding: queryEmbedding } = await embed({
+    model: google.textEmbeddingModel("text-embedding-004"),
+    value: normalizedQuery,
+  });
+
+  return emailEmbeddings
+    .map(({ id, embedding }) => {
+      const email = emailById.get(id);
+
+      if (!email) {
+        return null;
+      }
+
+      return {
+        score: cosineSimilarity(queryEmbedding, embedding),
+        email,
+      };
+    })
+    .filter((result) => result !== null)
     .sort((a, b) => b.score - a.score);
 }
 
