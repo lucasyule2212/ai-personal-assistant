@@ -20,6 +20,8 @@ export interface Email {
   phaseId?: number;
 }
 
+const RRF_K = 60;
+
 export async function searchWithBM25(keywords: string[], emails: Email[]) {
   // Combine subject + body for richer text corpus
   const corpus = emails.map((email) => `${email.subject} ${email.body}`);
@@ -31,6 +33,30 @@ export async function searchWithBM25(keywords: string[], emails: Email[]) {
   return scores
     .map((score, idx) => ({ score, email: emails[idx] }))
     .sort((a, b) => b.score - a.score);
+}
+
+export function reciprocalRankFusion(
+  rankings: { email: Email; score: number }[][]
+): { email: Email; score: number }[] {
+  const rrfScores = new Map<string, number>();
+  const emailMap = new Map<string, Email>();
+
+  for (const ranking of rankings) {
+    ranking.forEach((item, rank) => {
+      const currentScore = rrfScores.get(item.email.id) || 0;
+      const contribution = 1 / (RRF_K + rank);
+
+      rrfScores.set(item.email.id, currentScore + contribution);
+      emailMap.set(item.email.id, item.email);
+    });
+  }
+
+  return Array.from(rrfScores.entries())
+    .sort(([, scoreA], [, scoreB]) => scoreB - scoreA)
+    .map(([emailId, score]) => ({
+      score,
+      email: emailMap.get(emailId)!,
+    }));
 }
 
 export async function searchWithEmbeddings(query: string, emails: Email[]) {
@@ -63,6 +89,16 @@ export async function searchWithEmbeddings(query: string, emails: Email[]) {
     })
     .filter((result) => result !== null)
     .sort((a, b) => b.score - a.score);
+}
+
+export async function searchWithRRF(query: string, emails: Email[]) {
+  const bm25Ranking = await searchWithBM25(
+    query.toLowerCase().split(" "),
+    emails
+  );
+  const embeddingsRanking = await searchWithEmbeddings(query, emails);
+
+  return reciprocalRankFusion([bm25Ranking, embeddingsRanking]);
 }
 
 export async function loadEmails(): Promise<Email[]> {
