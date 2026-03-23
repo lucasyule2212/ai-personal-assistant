@@ -81,32 +81,42 @@ export const searchChunks = async (opts: {
     topResultsWithId.map((result) => [result.id, result]),
   );
 
-  const chunksWithId = topResultsWithId
-    .map((result) =>
-      [
-        `## ID: ${result.id}`,
-        `<content>`,
-        result.chunk,
-        `</content>`,
-      ].join('\n\n'),
-    )
-    .join('\n\n');
+  // Call reranker LLM
+  const rerankedResults = await generateObject({
+    model: google('gemini-2.5-flash-lite'),
+    system: `You are a search result reranker. Your job is to analyze a list of chunks from a TypeScript book and return only the IDs of the most relevant chunks for answering the user's question.
 
-  const searchQuery = [
-    opts.keywordsForBM25?.join(' '),
-    opts.embeddingsQuery,
-  ]
-    .filter(Boolean)
-    .join(' ');
+Given a list of chunks with their IDs and content, you should:
+1. Evaluate how relevant each chunk is to the user's search query
+2. Return only the IDs of the most relevant chunks
 
-  // TODO: Call generateObject to generate an array of IDs
-  // of the most relevant chunks, based on the user's search query.
-  // You should tell the LLM to return only the IDs, not the full chunks.
-  // You should also tell the LLM to be selective and only include chunks
-  // that are genuinely helpful for answering the question.
-  // If a chunk is only tangentially related or not relevant,
-  // exclude its ID.
-  const rerankedResults = TODO;
+You should be selective and only include chunks that are genuinely helpful for answering the question. If a chunk is only tangentially related or not relevant, exclude its ID.
+
+Return the IDs as a simple array of numbers.`,
+    schema: z.object({
+      resultIds: z
+        .array(z.number())
+        .describe('Array of IDs for the most relevant chunks'),
+    }),
+    prompt: `
+      Search query:
+      ${[opts.keywordsForBM25?.join(' '), opts.embeddingsQuery].filter(Boolean).join(' ')}
+
+      Available chunks:
+      ${topResultsWithId
+        .map((result) =>
+          [
+            `## ID: ${result.id}`,
+            `<content>`,
+            result.chunk,
+            `</content>`,
+          ].join('\n\n'),
+        )
+        .join('\n\n')}
+
+      Return only the IDs of the most relevant chunks for the user's search query.
+    `,
+  });
 
   const approvedChunkIds = rerankedResults.object.resultIds;
 
