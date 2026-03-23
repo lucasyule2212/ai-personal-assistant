@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Project (Next.js)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "project"
+    },
+    {
+      "name": "Skill Building (Exercises)",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000,
+      "cwd": "skill-building"
+    }
+  ]
+}

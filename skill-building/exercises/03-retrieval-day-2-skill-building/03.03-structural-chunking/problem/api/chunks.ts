@@ -3,17 +3,27 @@ import { readFileSync } from 'fs';
 import path from 'path';
 
 const splitter = new RecursiveCharacterTextSplitter({
-  // TODO: Set chunk size and overlap
-  chunkSize: 1000,
-  chunkOverlap: 100,
+  chunkSize: 2000,
+  chunkOverlap: 200,
   separators: [
-    // TODO: Add separators for headings (not including h1's)
+    // Chapter markers
+    '\n--- CHAPTER ---\n',
+    // Headings (not including h1's)
     '\n## ',
-    // TODO: Add separators for code blocks
-
-    // TODO: Add separators for chapter markers (e.g., "--- CHAPTER ---")
-
+    '\n### ',
+    '\n#### ',
+    '\n##### ',
+    '\n###### ',
+    // Code blocks, horizontal lines
+    '```\n\n',
+    '\n\n***\n\n',
+    '\n\n---\n\n',
+    '\n\n___\n\n',
+    // Newlines
     '\n\n',
+    '\n',
+    ' ',
+    '',
   ],
 });
 
