@@ -5,8 +5,11 @@ import {
   searchWithBM25,
   searchWithEmbeddings,
 } from "@/app/search";
+import { rerankEmails } from "@/app/rerank";
 import { tool } from "ai";
 import { z } from "zod";
+
+const NUMBER_PASSED_TO_RERANKER = 30;
 
 export const searchTool = tool({
   description:
@@ -14,7 +17,9 @@ export const searchTool = tool({
   inputSchema: z.object({
     keywords: z
       .array(z.string())
-      .describe("Exact keywords for BM25 search (names, amounts, specific terms)")
+      .describe(
+        "Exact keywords for BM25 search (names, amounts, specific terms)"
+      )
       .optional(),
     searchQuery: z
       .string()
@@ -37,24 +42,29 @@ export const searchTool = tool({
         ? await searchWithEmbeddings(searchQuery, emailChunks)
         : [];
     const rrfResults = reciprocalRankFusion([
-      bm25Results.slice(0, 30),
-      embeddingResults.slice(0, 30),
+      bm25Results.slice(0, NUMBER_PASSED_TO_RERANKER),
+      embeddingResults.slice(0, NUMBER_PASSED_TO_RERANKER),
     ]);
 
-    const topEmails = rrfResults
-      .slice(0, 10)
-      .filter((result) => result.score > 0)
-      .map((result) => ({
-        id: result.email.id,
-        from: result.email.from,
-        subject: result.email.subject,
-        to: result.email.to,
-        body: result.email.chunk,
-        timestamp: result.email.timestamp,
-        chunkIndex: result.email.index,
-        totalChunks: result.email.totalChunks,
-        score: result.score,
-      }));
+    const query = [keywords?.join(" "), searchQuery].filter(Boolean).join(" ");
+    const rerankedResults = await rerankEmails(
+      rrfResults.slice(0, NUMBER_PASSED_TO_RERANKER),
+      query
+    );
+
+    const topEmails = rerankedResults.map((result) => ({
+      id: result.email.id,
+      from: result.email.from,
+      subject: result.email.subject,
+      to: result.email.to,
+      body: result.email.chunk,
+      timestamp: result.email.timestamp,
+      chunkIndex: result.email.index,
+      totalChunks: result.email.totalChunks,
+      score: result.score,
+    }));
+
+    console.log("Top emails:", topEmails.length);
 
     return {
       emails: topEmails,
