@@ -1,5 +1,5 @@
 import { google } from "@ai-sdk/google";
-import { generateObject } from "ai";
+import { generateObject, ModelMessage } from "ai";
 import { z } from "zod";
 
 type ResultWithEmail<
@@ -13,7 +13,8 @@ export const rerankEmails = async <
   TEmail extends { id: string; subject: string; chunk: string },
 >(
   results: ResultWithEmail<TEmail>[],
-  query: string
+  query: string,
+  conversationHistory: ModelMessage[]
 ): Promise<ResultWithEmail<TEmail>[]> => {
   const normalizedQuery = query.trim();
 
@@ -39,6 +40,11 @@ You are a reranker for an email assistant.
 Your job is to review candidate email chunks and decide which ones are genuinely useful for answering the user's search query.
 </task-context>
 
+<conversation-context>
+You will be given the recent conversation history before the final reranking request.
+Use that conversation to resolve ambiguity, follow pronouns and references, and understand the user's actual information need.
+</conversation-context>
+
 <evaluation-criteria>
 Prefer chunks that contain direct evidence, concrete facts, or specific details that help answer the query.
 Examples of high-value details include names, dates, locations, amounts, plans, decisions, and explicit statements.
@@ -62,7 +68,11 @@ Do not invent IDs.
         .array(z.number())
         .describe("IDs of the chunks that are relevant to the query"),
     }),
-    prompt: `
+    messages: [
+      ...conversationHistory,
+      {
+        role: "user",
+        content: `
 <search-query>
 ${normalizedQuery}
 </search-query>
@@ -85,7 +95,9 @@ ${resultWithId.email.chunk}
 Return the IDs of the chunks that are genuinely useful for answering the search query.
 Order them from most useful to least useful.
 </the-ask>
-    `,
+        `,
+      },
+    ],
   });
 
   console.log("Reranked results:", rerankedResults.object.resultIds);
