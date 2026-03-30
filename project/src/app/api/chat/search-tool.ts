@@ -14,7 +14,7 @@ const NUMBER_PASSED_TO_RERANKER = 30;
 export const searchTool = (messages: UIMessage[]) =>
   tool({
     description:
-      "Search emails using both keyword and semantic search. Returns most relevant emails ranked by reciprocal rank fusion.",
+      "Search emails using both keyword and semantic search. Returns metadata with snippets only. Use getEmails to fetch full content of specific emails.",
     inputSchema: z.object({
       keywords: z
         .array(z.string())
@@ -61,17 +61,33 @@ export const searchTool = (messages: UIMessage[]) =>
         conversationHistory
       );
 
-      const topEmails = rerankedResults.map((result) => ({
-        id: result.email.id,
-        from: result.email.from,
-        subject: result.email.subject,
-        to: result.email.to,
-        body: result.email.chunk,
-        timestamp: result.email.timestamp,
-        chunkIndex: result.email.index,
-        totalChunks: result.email.totalChunks,
-        score: result.score,
-      }));
+      const emailsById = new Map(emails.map((email) => [email.id, email]));
+      const seenEmailIds = new Set<string>();
+      const topEmails = rerankedResults.flatMap((result) => {
+        if (seenEmailIds.has(result.email.emailId)) {
+          return [];
+        }
+
+        seenEmailIds.add(result.email.emailId);
+
+        const fullEmail = emailsById.get(result.email.emailId);
+        const snippet =
+          result.email.chunk.slice(0, 150).trim() +
+          (result.email.chunk.length > 150 ? "..." : "");
+
+        return [
+          {
+            id: result.email.emailId,
+            threadId: fullEmail?.threadId ?? "",
+            subject: result.email.subject,
+            from: result.email.from,
+            to: result.email.to,
+            timestamp: result.email.timestamp,
+            score: result.score,
+            snippet,
+          },
+        ];
+      });
 
       console.log("Top emails:", topEmails.length);
 

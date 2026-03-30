@@ -28,6 +28,7 @@ export interface Email {
 
 export type EmailChunk = {
   id: string;
+  emailId: string;
   subject: string;
   chunk: string;
   index: number;
@@ -51,9 +52,10 @@ export const chunkEmails = async (emails: Email[]) => {
   for (const email of emails) {
     const chunks = await textSplitter.splitText(email.body);
 
-    chunks.forEach((chunk, chunkIndex) => {
+    chunks.forEach((chunk: string, chunkIndex: number) => {
       emailsWithChunks.push({
         id: `${email.id}-${chunkIndex}`,
+        emailId: email.id,
         index: chunkIndex,
         subject: email.subject,
         chunk,
