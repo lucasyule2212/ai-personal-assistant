@@ -21,9 +21,11 @@ export type MyMessage = UIMessage<unknown, {}>;
 
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
     `ID: ${memory.id}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
+    `Updated At: ${memory.updatedAt}`,
   ].join('\n');
 };
 
@@ -67,9 +69,16 @@ export const POST = async (req: Request): Promise<Response> => {
                   .describe(
                     'The ID of the existing memory to update',
                   ),
-                memory: z
+                title: z
                   .string()
-                  .describe('The updated memory content'),
+                  .describe(
+                    'A short title for the updated memory.',
+                  ),
+                content: z
+                  .string()
+                  .describe(
+                    'The updated permanent fact, preference, or long-term detail about the user.',
+                  ),
               }),
             )
             .describe(
@@ -81,51 +90,98 @@ export const POST = async (req: Request): Promise<Response> => {
               'Array of memory IDs that should be deleted (outdated, incorrect, or no longer relevant)',
             ),
           additions: z
-            .array(z.string())
+            .array(
+              z.object({
+                title: z
+                  .string()
+                  .describe('A short title for the new memory.'),
+                content: z
+                  .string()
+                  .describe(
+                    'A concise but clear permanent fact, preference, or long-term detail about the user.',
+                  ),
+              }),
+            )
             .describe(
-              "Array of new memory strings to add to the user's permanent memory",
+              "Array of new memories to add to the user's permanent memory",
             ),
         }),
-        system: `You are a memory management agent. Your task is to analyze the conversation history and manage the user's permanent memories by adding new ones, updating existing ones, and deleting outdated ones.
+        system: `You are a memory management agent.
 
-        PERMANENT MEMORIES are facts about the user that:
-        - Are unlikely to change over time (preferences, traits, characteristics)
-        - Will remain relevant for weeks, months, or years
-        - Include personal details, preferences, habits, or important information shared
-        - Are NOT temporary or situational information
+Review the conversation and manage the user's durable memories.
 
-        EXAMPLES OF PERMANENT MEMORIES:
-        - "User prefers dark mode interfaces"
-        - "User works as a software engineer"
-        - "User has a dog named Max"
-        - "User is learning TypeScript"
-        - "User prefers concise explanations"
-        - "User lives in San Francisco"
+Store memories that are likely to remain useful across future conversations:
+- stable preferences
+- long-term goals
+- important personal details
+- enduring habits, roles, or responsibilities
 
-        EXAMPLES OF WHAT NOT TO MEMORIZE:
-        - "User asked about weather today" (temporary)
-        - "User is currently debugging code" (situational)
-        - "User said hello" (trivial interaction)
+Do not store temporary or situational information:
+- one-off tasks
+- today's requests
+- transient moods or states
+- short-lived project context unless the user clearly frames it as long-term
 
-        MEMORY MANAGEMENT TASKS:
-        1. ADDITIONS: Extract any new permanent memories from this conversation that aren't already covered by existing memories.
-        2. UPDATES: Identify existing memories that need to be updated with new information (e.g., if user mentioned they moved cities, update their location memory).
-        3. DELETIONS: Identify existing memories that are now outdated, incorrect, or no longer relevant based on new information in the conversation.
+MEMORY MANAGEMENT TASKS:
+1. ADDITIONS: Extract new permanent memories from this conversation that are not already covered by existing memories.
+2. UPDATES: Update existing memories when the user clarifies them, changes preferences, or provides information that contradicts an existing memory.
+3. DELETIONS: Delete existing memories when they are outdated, incorrect, or no longer relevant.
 
-        For each memory operation:
-        - Additions: Return concise, factual statements about the user
-        - Updates: Provide the memory ID and the updated content
-        - Deletions: Provide the memory ID of memories that should be removed
+When to update:
+- user preferences change
+- new information contradicts old information
+- clarifications improve an existing memory
 
-        EXISTING MEMORIES:
-        ${memoriesText}
+When to delete:
+- information is outdated
+- information is incorrect
+- information is no longer relevant
 
-        If no memory changes are needed, return empty arrays for all operations.`,
+Each memory should be:
+- specific
+- factual
+- written about the user
+- useful for future personalization
+
+For updates and additions, return both title and content.
+For deletions, return only the memory ID.
+
+If no changes are needed, return empty arrays for updates, deletions, and additions.
+
+Existing memories:
+${memoriesText || 'No stored memories yet.'}`,
         messages: convertToModelMessages(allMessages),
       });
 
-      const { updates, deletions, additions } =
-        memoriesResult.object;
+      const updates = memoriesResult.object.updates
+        .map((memory) => ({
+          id: memory.id.trim(),
+          title: memory.title.trim(),
+          content: memory.content.trim(),
+        }))
+        .filter(
+          (memory) =>
+            memory.id && memory.title && memory.content,
+        );
+
+      const deletions = memoriesResult.object.deletions
+        .map((memoryId) => memoryId.trim())
+        .filter(Boolean);
+
+      const additions = memoriesResult.object.additions
+        .map((memory) => ({
+          title: memory.title.trim(),
+          content: memory.content.trim(),
+        }))
+        .filter((memory) => memory.title && memory.content)
+        .filter(
+          (memory, index, allAdditions) =>
+            allAdditions.findIndex(
+              (candidate) =>
+                candidate.title === memory.title &&
+                candidate.content === memory.content,
+            ) === index,
+        );
 
       console.log('Updates', updates);
       console.log('Deletions', deletions);
@@ -139,8 +195,8 @@ export const POST = async (req: Request): Promise<Response> => {
 
       updates.forEach((update) =>
         updateMemory(update.id, {
-          memory: update.memory,
-          createdAt: new Date().toISOString(),
+          title: update.title,
+          content: update.content,
         }),
       );
 
@@ -148,13 +204,36 @@ export const POST = async (req: Request): Promise<Response> => {
         deleteMemory(deletion),
       );
 
-      saveMemories(
-        additions.map((addition) => ({
-          id: generateId(),
-          memory: addition,
-          createdAt: new Date().toISOString(),
-        })),
+      if (additions.length === 0) {
+        return;
+      }
+
+      const latestMemories = loadMemories();
+      const memoriesToCreate = additions.filter(
+        (memory) =>
+          !latestMemories.some(
+            (existingMemory) =>
+              existingMemory.title === memory.title &&
+              existingMemory.content === memory.content,
+          ),
       );
+
+      if (memoriesToCreate.length === 0) {
+        return;
+      }
+
+      const createdAt = new Date().toISOString();
+
+      saveMemories([
+        ...latestMemories,
+        ...memoriesToCreate.map((memory) => ({
+          id: generateId(),
+          title: memory.title,
+          content: memory.content,
+          createdAt,
+          updatedAt: createdAt,
+        })),
+      ]);
     },
   });
 

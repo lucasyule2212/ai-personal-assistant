@@ -10,8 +10,10 @@ export namespace DB {
   // Types for our persistence layer
   export interface MemoryItem {
     id: string;
-    memory: string;
+    title: string;
+    content: string;
     createdAt: string;
+    updatedAt: string;
   }
 
   export interface PersistenceData {
@@ -25,10 +27,6 @@ const DATA_FILE_PATH = join(
   'data',
   'memories.local.json',
 );
-
-export const generateId = () => {
-  return Math.random().toString(36).substring(2, 10);
-};
 
 /**
  * Ensure the data directory exists
@@ -60,7 +58,11 @@ export function loadMemories(): DB.MemoryItem[] {
     ensureDataDirectory();
     const data = readFileSync(DATA_FILE_PATH, 'utf-8');
     const parsed: DB.PersistenceData = JSON.parse(data);
-    return parsed.memories || [];
+    return (parsed.memories || []).sort(
+      (a, b) =>
+        new Date(b.updatedAt).getTime() -
+        new Date(a.updatedAt).getTime(),
+    );
   } catch (error) {
     // If file doesn't exist or is invalid, return empty array
     return [];
@@ -68,26 +70,37 @@ export function loadMemories(): DB.MemoryItem[] {
 }
 
 /**
- * Save all chats to the JSON file
+ * Save all memories to the JSON file
  */
 export function saveMemories(memories: DB.MemoryItem[]): void {
-  const data = loadDB();
-  data.memories = [...data.memories, ...memories];
-
   writeFileSync(
     DATA_FILE_PATH,
-    JSON.stringify(data, null, 2),
+    JSON.stringify({ memories }, null, 2),
     'utf-8',
   );
 }
 
 export function updateMemory(
   memoryId: string,
-  memory: Omit<DB.MemoryItem, 'id'>,
+  memory: Pick<DB.MemoryItem, 'title' | 'content'>,
 ): boolean {
   const data = loadDB();
+  const memoryIndex = data.memories.findIndex(
+    (m) => m.id === memoryId,
+  );
+
+  if (memoryIndex === -1) {
+    return false;
+  }
+
   data.memories = data.memories.map((m) =>
-    m.id === memoryId ? { ...m, ...memory } : m,
+    m.id === memoryId
+      ? {
+          ...m,
+          ...memory,
+          updatedAt: new Date().toISOString(),
+        }
+      : m,
   );
 
   writeFileSync(
@@ -101,7 +114,12 @@ export function updateMemory(
 
 export function deleteMemory(memoryId: string): boolean {
   const data = loadDB();
+  const initialLength = data.memories.length;
   data.memories = data.memories.filter((m) => m.id !== memoryId);
+
+  if (data.memories.length === initialLength) {
+    return false;
+  }
 
   writeFileSync(
     DATA_FILE_PATH,

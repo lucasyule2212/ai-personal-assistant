@@ -19,7 +19,8 @@ export type MyMessage = UIMessage<unknown, {}>;
 
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
   ].join('\n');
 };
@@ -57,49 +58,95 @@ export const POST = async (req: Request): Promise<Response> => {
       const memoriesResult = await generateObject({
         model: google('gemini-2.5-flash-lite'),
         schema: z.object({
-          memories: z.array(z.string()),
+          memories: z.array(
+            z.object({
+              title: z
+                .string()
+                .describe('A short title for the memory.'),
+              content: z
+                .string()
+                .describe(
+                  'A concise but clear permanent fact, preference, or long-term detail about the user.',
+                ),
+            }),
+          ),
         }),
-        system: `You are a memory extraction agent. Your task is to analyze the conversation history and extract permanent memories about the user.
+        system: `You are a memory extraction agent.
 
-        PERMANENT MEMORIES are facts about the user that:
-        - Are unlikely to change over time (preferences, traits, characteristics)
-        - Will remain relevant for weeks, months, or years
-        - Include personal details, preferences, habits, or important information shared
-        - Are NOT temporary or situational information
+Extract only permanent, durable memories about the user from the conversation.
 
-        EXAMPLES OF PERMANENT MEMORIES:
-        - "User prefers dark mode interfaces"
-        - "User works as a software engineer"
-        - "User has a dog named Max"
-        - "User is learning TypeScript"
-        - "User prefers concise explanations"
-        - "User lives in San Francisco"
+Store memories that are likely to remain useful across future conversations:
+- stable preferences
+- long-term goals
+- important personal details
+- enduring habits, roles, or responsibilities
 
-        EXAMPLES OF WHAT NOT TO MEMORIZE:
-        - "User asked about weather today" (temporary)
-        - "User is currently debugging code" (situational)
-        - "User said hello" (trivial interaction)
+Do not store temporary or situational information:
+- one-off tasks
+- today's requests
+- transient moods or states
+- short-lived project context unless the user clearly frames it as long-term
 
-        Extract any new permanent memories from this conversation. Return an array of memory strings that should be added to the user's permanent memory. Each memory should be a concise, factual statement about the user.
+Each memory must be:
+- specific
+- factual
+- written about the user
+- useful for future personalization
 
-        EXISTING MEMORIES:
-        ${memoriesText}
+Return only brand new memories that are not already covered by the existing memory list.
 
-        If no new permanent memories are found, return an empty array.`,
+Existing memories:
+${memoriesText || 'No stored memories yet.'}`,
         messages: convertToModelMessages(allMessages),
       });
 
-      const newMemories = memoriesResult.object.memories;
+      const newMemories = memoriesResult.object.memories
+        .map((memory) => ({
+          title: memory.title.trim(),
+          content: memory.content.trim(),
+        }))
+        .filter((memory) => memory.title && memory.content)
+        .filter(
+          (memory) =>
+            !memories.some(
+              (existingMemory) =>
+                existingMemory.title === memory.title &&
+                existingMemory.content === memory.content,
+            ),
+        );
 
       console.log('newMemories', newMemories);
 
-      saveMemories(
-        newMemories.map((memory) => ({
-          id: generateId(),
-          memory,
-          createdAt: new Date().toISOString(),
-        })),
+      if (newMemories.length === 0) {
+        return;
+      }
+
+      const latestMemories = loadMemories();
+      const memoriesToCreate = newMemories.filter(
+        (memory) =>
+          !latestMemories.some(
+            (existingMemory) =>
+              existingMemory.title === memory.title &&
+              existingMemory.content === memory.content,
+          ),
       );
+
+      if (memoriesToCreate.length === 0) {
+        return;
+      }
+
+      const createdAt = new Date().toISOString();
+
+      saveMemories([
+        ...latestMemories,
+        ...memoriesToCreate.map((memory) => ({
+          id: generateId(),
+          title: memory.title,
+          content: memory.content,
+          createdAt,
+          updatedAt: createdAt,
+        })),
+      ]);
     },
   });
 

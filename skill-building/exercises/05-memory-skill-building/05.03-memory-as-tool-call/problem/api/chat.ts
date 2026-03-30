@@ -19,11 +19,31 @@ import {
 
 export type MyMessage = UIMessage<unknown, {}>;
 
+const MEMORY_TITLE_MAX_LENGTH = 60;
+
+const toStoredMemory = (memory: string) => {
+  const normalizedMemory = memory.replace(/\s+/g, ' ').trim();
+  const firstSentence = normalizedMemory
+    .split(/[.!?]/, 1)[0]
+    ?.trim();
+  const title = (firstSentence || normalizedMemory).slice(
+    0,
+    MEMORY_TITLE_MAX_LENGTH,
+  );
+
+  return {
+    title,
+    content: normalizedMemory,
+  };
+};
+
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
     `ID: ${memory.id}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
+    `Updated At: ${memory.updatedAt}`,
   ].join('\n');
 };
 

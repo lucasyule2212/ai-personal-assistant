@@ -19,11 +19,31 @@ import {
 
 export type MyMessage = UIMessage<unknown, {}>;
 
+const MEMORY_TITLE_MAX_LENGTH = 60;
+
+const toStoredMemory = (memory: string) => {
+  const normalizedMemory = memory.replace(/\s+/g, ' ').trim();
+  const firstSentence = normalizedMemory
+    .split(/[.!?]/, 1)[0]
+    ?.trim();
+  const title = (firstSentence || normalizedMemory).slice(
+    0,
+    MEMORY_TITLE_MAX_LENGTH,
+  );
+
+  return {
+    title,
+    content: normalizedMemory,
+  };
+};
+
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
     `ID: ${memory.id}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
+    `Updated At: ${memory.updatedAt}`,
   ].join('\n');
 };
 
@@ -74,41 +94,59 @@ export const POST = async (req: Request): Promise<Response> => {
                   ),
                 memory: z
                   .string()
-                  .describe('The updated memory content'),
+                  .describe('The new memory text'),
               }),
             )
             .describe(
               'Array of existing memories that need to be updated with new information',
-            ),
+            )
+            .default([]),
           deletions: z
             .array(z.string())
             .describe(
               'Array of memory IDs that should be deleted (outdated, incorrect, or no longer relevant)',
-            ),
+            )
+            .default([]),
           additions: z
             .array(z.string())
             .describe(
               "Array of new memory strings to add to the user's permanent memory",
-            ),
+            )
+            .default([]),
         }),
         execute: async ({ updates, deletions, additions }) => {
+          const normalizedUpdates = updates
+            .map((update) => ({
+              id: update.id.trim(),
+              memory: update.memory.trim(),
+            }))
+            .filter((update) => update.id && update.memory);
+          const normalizedDeletions = deletions
+            .map((deletion) => deletion.trim())
+            .filter(Boolean);
+          const normalizedAdditions = [
+            ...new Set(additions.map((memory) => memory.trim())),
+          ].filter(Boolean);
+
           console.log('Memory tool called:');
-          console.log('Updates:', updates);
-          console.log('Deletions:', deletions);
-          console.log('Additions:', additions);
+          console.log('Updates:', normalizedUpdates);
+          console.log('Deletions:', normalizedDeletions);
+          console.log('Additions:', normalizedAdditions);
 
           // Filter out deletions that are being updated
-          const filteredDeletions = deletions.filter(
+          const filteredDeletions = normalizedDeletions.filter(
             (deletion) =>
-              !updates.some((update) => update.id === deletion),
+              !normalizedUpdates.some(
+                (update) => update.id === deletion,
+              ),
           );
 
           // Perform updates
-          updates.forEach((update) =>
-            updateMemory(update.id, {
-              memory: update.memory,
-              createdAt: new Date().toISOString(),
-            }),
+          normalizedUpdates.forEach((update) =>
+            updateMemory(
+              update.id,
+              toStoredMemory(update.memory),
+            ),
           );
 
           // Perform deletions
@@ -117,17 +155,40 @@ export const POST = async (req: Request): Promise<Response> => {
           );
 
           // Perform additions
-          saveMemories(
-            additions.map((addition) => ({
-              id: generateId(),
-              memory: addition,
-              createdAt: new Date().toISOString(),
-            })),
-          );
+          if (normalizedAdditions.length > 0) {
+            const latestMemories = loadMemories();
+            const existingMemoryContents = new Set(
+              latestMemories.map((memory) => memory.content),
+            );
+            const now = new Date().toISOString();
+            const memoriesToCreate = normalizedAdditions
+              .filter(
+                (addition) =>
+                  !existingMemoryContents.has(addition),
+              )
+              .map((addition) => {
+                const storedMemory = toStoredMemory(addition);
+
+                return {
+                  id: generateId(),
+                  title: storedMemory.title,
+                  content: storedMemory.content,
+                  createdAt: now,
+                  updatedAt: now,
+                };
+              });
+
+            if (memoriesToCreate.length > 0) {
+              saveMemories([
+                ...latestMemories,
+                ...memoriesToCreate,
+              ]);
+            }
+          }
 
           return {
             success: true,
-            message: `Updated ${updates.length} memories, deleted ${filteredDeletions.length} memories, added ${additions.length} new memories.`,
+            message: `Updated ${normalizedUpdates.length} memories, deleted ${filteredDeletions.length} memories, added ${normalizedAdditions.length} new memories.`,
           };
         },
       }),

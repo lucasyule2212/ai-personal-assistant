@@ -19,7 +19,8 @@ export type MyMessage = UIMessage<unknown, {}>;
 
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
   ].join('\n');
 };
@@ -62,7 +63,22 @@ export const POST = async (req: Request): Promise<Response> => {
       // and not temporary or situational information
       const memoriesResult = TODO;
 
-      const newMemories = memoriesResult.object.memories;
+      const newMemories = memoriesResult.object.memories
+        .map((memory) => ({
+          title: memory.title.trim(),
+          content: memory.content.trim(),
+        }))
+        .filter((memory) => memory.title && memory.content)
+        .filter(
+          (memory) =>
+            !memories.some(
+              (existingMemory) =>
+                existingMemory.title === memory.title &&
+                existingMemory.content === memory.content,
+            ),
+        );
+
+      console.log('newMemories', newMemories);
 
       // TODO: Save the new memories to the database using the saveMemories function
     },

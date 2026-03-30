@@ -21,9 +21,11 @@ export type MyMessage = UIMessage<unknown, {}>;
 
 const formatMemory = (memory: DB.MemoryItem) => {
   return [
-    `Memory: ${memory.memory}`,
     `ID: ${memory.id}`,
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
     `Created At: ${memory.createdAt}`,
+    `Updated At: ${memory.updatedAt}`,
   ].join('\n');
 };
 
