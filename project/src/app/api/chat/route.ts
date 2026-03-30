@@ -15,11 +15,11 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  generateObject,
   InferUITools,
   safeValidateUIMessages,
   stepCountIs,
   streamText,
+  tool,
   UIMessage,
 } from "ai";
 import { z } from "zod";
@@ -39,10 +39,121 @@ export type MyMessage = UIMessage<
   InferUITools<ReturnType<typeof getTools>>
 >;
 
+const MEMORY_TITLE_MAX_LENGTH = 60;
+
+const toStoredMemory = (memory: string) => {
+  const normalizedMemory = memory.replace(/\s+/g, " ").trim();
+  const firstSentence = normalizedMemory.split(/[.!?]/, 1)[0]?.trim();
+  const title = (firstSentence || normalizedMemory).slice(
+    0,
+    MEMORY_TITLE_MAX_LENGTH
+  );
+
+  return {
+    title,
+    content: normalizedMemory,
+  };
+};
+
+const manageMemoriesTool = tool({
+  description:
+    "Manage durable user memories. Call this when the user shares lasting personal details, changes or contradicts earlier facts, or explicitly asks you to remember or forget something.",
+  inputSchema: z.object({
+    updates: z
+      .array(
+        z.object({
+          id: z
+            .string()
+            .describe("The ID of the existing memory that should be updated."),
+          memory: z
+            .string()
+            .describe(
+              "The new memory text that should replace the existing one."
+            ),
+        })
+      )
+      .default([]),
+    deletions: z
+      .array(z.string())
+      .describe(
+        "Memory IDs to delete because they are outdated, incorrect, or no longer relevant."
+      )
+      .default([]),
+    additions: z
+      .array(z.string())
+      .describe(
+        "New durable memory strings to add for the user when they share important long-term information."
+      )
+      .default([]),
+  }),
+  execute: async ({ updates, deletions, additions }) => {
+    const normalizedUpdates = updates
+      .map((update) => ({
+        id: update.id.trim(),
+        memory: update.memory.trim(),
+      }))
+      .filter((update) => update.id && update.memory);
+    const normalizedDeletions = deletions
+      .map((deletion) => deletion.trim())
+      .filter(Boolean);
+    const normalizedAdditions = [
+      ...new Set(additions.map((memory) => memory.trim())),
+    ].filter(Boolean);
+
+    console.log("Memory tool called:");
+    console.log("Updates:", normalizedUpdates);
+    console.log("Deletions:", normalizedDeletions);
+    console.log("Additions:", normalizedAdditions);
+
+    const filteredDeletions = normalizedDeletions.filter(
+      (deletion) => !normalizedUpdates.some((update) => update.id === deletion)
+    );
+
+    for (const update of normalizedUpdates) {
+      await updateMemory(update.id, toStoredMemory(update.memory));
+    }
+
+    for (const deletion of filteredDeletions) {
+      await deleteMemory(deletion);
+    }
+
+    if (normalizedAdditions.length > 0) {
+      const latestMemories = await loadMemories();
+      const existingMemoryContents = new Set(
+        latestMemories.map((memory) => memory.content)
+      );
+      const now = new Date().toISOString();
+      const memoriesToCreate = normalizedAdditions
+        .filter((memory) => !existingMemoryContents.has(memory))
+        .map((memory) => {
+          const storedMemory = toStoredMemory(memory);
+
+          return {
+            id: generateId(),
+            title: storedMemory.title,
+            content: storedMemory.content,
+            createdAt: now,
+            updatedAt: now,
+          };
+        });
+
+      if (memoriesToCreate.length > 0) {
+        await saveMemories([...latestMemories, ...memoriesToCreate]);
+      }
+    }
+
+    return {
+      success: true,
+      message: `Updated ${normalizedUpdates.length} memories, deleted ${filteredDeletions.length} memories, added ${normalizedAdditions.length} memories.`,
+    };
+  },
+});
+
 const getTools = (messages: UIMessage[]) => ({
   search: searchTool(messages),
   filterEmails: filterEmailsTool,
   getEmails: getEmailsTool,
+  manageMemories: manageMemoriesTool,
 });
 
 const formatMemory = (memory: DB.Memory) => {
@@ -134,7 +245,7 @@ ${memoriesText || "No stored memories yet."}
 </memories>
 
 <rules>
-- You have THREE tools available: 'search', 'filterEmails', and 'getEmails'
+- You have FOUR tools available: 'search', 'filterEmails', 'getEmails', and 'manageMemories'
 - Follow this multi-step workflow for token efficiency:
 
   STEP 1 - Browse metadata:
@@ -167,6 +278,9 @@ ${memoriesText || "No stored memories yet."}
 - NEVER answer from your training data - always use tools first
 - If the first query doesn't find enough information, try different approaches or tools
 - Only after using tools should you formulate your answer based on the results
+- Use 'manageMemories' when the user shares durable personal information, changes a previous fact or preference, or explicitly asks you to remember or forget something
+- Skip 'manageMemories' for casual small talk, temporary requests, and situational details that are unlikely to matter later
+- It is fine to batch memory updates from multiple recent turns into a single 'manageMemories' call when that is more efficient
 </rules>
 
 <the-ask>
@@ -174,7 +288,7 @@ Here is the user's question. Follow the multi-step workflow above to efficiently
 </the-ask>
         `,
         tools: getTools(messages),
-        stopWhen: [stepCountIs(10)],
+        stopWhen: stepCountIs(5),
       });
 
       writer.merge(
@@ -189,164 +303,6 @@ Here is the user's question. Follow the multi-step workflow above to efficiently
     generateId: () => crypto.randomUUID(),
     onFinish: async ({ responseMessage }) => {
       await appendToChatMessages(chatId, [responseMessage]);
-
-      const allMessages = [...messages, responseMessage];
-      const memoriesResult = await generateObject({
-        model: google("gemini-2.5-flash"),
-        schema: z.object({
-          updates: z.array(
-            z.object({
-              id: z
-                .string()
-                .describe("The ID of the existing memory to update."),
-              title: z
-                .string()
-                .describe("A short title for the updated memory."),
-              content: z
-                .string()
-                .describe(
-                  "The updated permanent fact, preference, or long-term detail about the user."
-                ),
-            })
-          ),
-          deletions: z
-            .array(z.string())
-            .describe(
-              "Memory IDs to delete because the memory is outdated, incorrect, or no longer relevant."
-            ),
-          additions: z.array(
-            z.object({
-              title: z.string().describe("A short title for the new memory."),
-              content: z
-                .string()
-                .describe(
-                  "A concise but clear permanent fact, preference, or long-term detail about the user."
-                ),
-            })
-          ),
-        }),
-        system: `You are a memory management agent.
-
-Review the conversation and manage the user's durable memories.
-
-Store memories that are likely to remain useful across future conversations:
-- stable preferences
-- long-term goals
-- important personal details
-- enduring habits, roles, or responsibilities
-
-Do not store temporary or situational information:
-- one-off tasks
-- today's requests
-- transient moods or states
-- short-lived project context unless the user clearly frames it as long-term
-
-MEMORY MANAGEMENT TASKS:
-1. ADDITIONS: Extract new permanent memories from this conversation that are not already covered by existing memories.
-2. UPDATES: Update existing memories when the user clarifies them, changes preferences, or provides information that contradicts an existing memory.
-3. DELETIONS: Delete existing memories when they are outdated, incorrect, or no longer relevant.
-
-When to update:
-- user preferences change
-- new information contradicts old information
-- clarifications improve an existing memory
-
-When to delete:
-- information is outdated
-- information is incorrect
-- information is no longer relevant
-
-Each memory should be:
-- specific
-- factual
-- written about the user
-- useful for future personalization
-
-For updates and additions, return both title and content.
-For deletions, return only the memory ID.
-
-If no changes are needed, return empty arrays for updates, deletions, and additions.
-
-Existing memories:
-${memoriesText || "No stored memories yet."}`,
-        messages: convertToModelMessages(allMessages),
-      });
-
-      const updates = memoriesResult.object.updates
-        .map((memory) => ({
-          id: memory.id.trim(),
-          title: memory.title.trim(),
-          content: memory.content.trim(),
-        }))
-        .filter((memory) => memory.id && memory.title && memory.content);
-
-      const deletions = memoriesResult.object.deletions
-        .map((memoryId) => memoryId.trim())
-        .filter(Boolean);
-
-      const additions = memoriesResult.object.additions
-        .map((memory) => ({
-          title: memory.title.trim(),
-          content: memory.content.trim(),
-        }))
-        .filter((memory) => memory.title && memory.content)
-        .filter(
-          (memory, index, allAdditions) =>
-            allAdditions.findIndex(
-              (candidate) =>
-                candidate.title === memory.title &&
-                candidate.content === memory.content
-            ) === index
-        );
-
-      console.log("Updates", updates);
-      console.log("Deletions", deletions);
-      console.log("Additions", additions);
-
-      const filteredDeletions = deletions.filter(
-        (deletion) => !updates.some((update) => update.id === deletion)
-      );
-
-      for (const update of updates) {
-        await updateMemory(update.id, {
-          title: update.title,
-          content: update.content,
-        });
-      }
-
-      for (const deletion of filteredDeletions) {
-        await deleteMemory(deletion);
-      }
-
-      if (additions.length === 0) {
-        return;
-      }
-
-      const latestMemories = await loadMemories();
-      const memoriesToCreate = additions.filter(
-        (memory) =>
-          !latestMemories.some(
-            (existingMemory) =>
-              existingMemory.title === memory.title &&
-              existingMemory.content === memory.content
-          )
-      );
-
-      if (memoriesToCreate.length === 0) {
-        return;
-      }
-
-      const createdAt = new Date().toISOString();
-      await saveMemories([
-        ...latestMemories,
-        ...memoriesToCreate.map((memory) => ({
-          id: generateId(),
-          title: memory.title,
-          content: memory.content,
-          createdAt,
-          updatedAt: createdAt,
-        })),
-      ]);
     },
   });
 
