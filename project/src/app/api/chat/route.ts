@@ -3,6 +3,8 @@ import {
   createChat,
   DB,
   getChat,
+  loadMemories,
+  saveMemories,
   updateChatTitle,
 } from "@/lib/persistence-layer";
 import { google } from "@ai-sdk/google";
@@ -10,12 +12,15 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  generateId,
+  generateObject,
   InferUITools,
   safeValidateUIMessages,
   stepCountIs,
   streamText,
   UIMessage,
 } from "ai";
+import { z } from "zod";
 import { filterEmailsTool } from "./filter-tool";
 import { generateTitleForChat } from "./generate-title";
 import { getEmailsTool } from "./get-emails-tool";
@@ -38,6 +43,14 @@ const getTools = (messages: UIMessage[]) => ({
   getEmails: getEmailsTool,
 });
 
+const formatMemory = (memory: DB.Memory) => {
+  return [
+    `Title: ${memory.title}`,
+    `Content: ${memory.content}`,
+    `Created At: ${memory.createdAt}`,
+  ].join("\n");
+};
+
 export async function POST(req: Request) {
   const body: {
     messages: UIMessage[];
@@ -55,6 +68,8 @@ export async function POST(req: Request) {
   }
 
   const messages = validatedMessagesResult.data;
+  const memories = await loadMemories();
+  const memoriesText = memories.map(formatMemory).join("\n\n");
 
   let chat = await getChat(chatId);
   const mostRecentMessage = messages[messages.length - 1];
@@ -109,6 +124,10 @@ export async function POST(req: Request) {
 <task-context>
 You are an email assistant that helps users find and understand information from their emails.
 </task-context>
+
+<memories>
+${memoriesText || "No stored memories yet."}
+</memories>
 
 <rules>
 - You have THREE tools available: 'search', 'filterEmails', and 'getEmails'
@@ -166,6 +185,97 @@ Here is the user's question. Follow the multi-step workflow above to efficiently
     generateId: () => crypto.randomUUID(),
     onFinish: async ({ responseMessage }) => {
       await appendToChatMessages(chatId, [responseMessage]);
+
+      const allMessages = [...messages, responseMessage];
+      const memoriesResult = await generateObject({
+        model: google("gemini-2.5-flash"),
+        schema: z.object({
+          memories: z.array(
+            z.object({
+              title: z.string().describe("A short title for the memory."),
+              content: z
+                .string()
+                .describe(
+                  "A concise but clear permanent fact, preference, or long-term detail about the user."
+                ),
+            })
+          ),
+        }),
+        system: `You are a memory extraction agent.
+
+Extract only permanent, durable memories about the user from the conversation.
+
+Store memories that are likely to remain useful across future conversations:
+- stable preferences
+- long-term goals
+- important personal details
+- enduring habits, roles, or responsibilities
+
+Do not store temporary or situational information:
+- one-off tasks
+- today's requests
+- transient moods or states
+- short-lived project context unless the user clearly frames it as long-term
+
+Each memory must be:
+- specific
+- factual
+- written about the user
+- useful for future personalization
+
+Return only brand new memories that are not already covered by the existing memory list.
+
+Existing memories:
+${memoriesText || "No stored memories yet."}`,
+        messages: convertToModelMessages(allMessages),
+      });
+
+      const newMemories = memoriesResult.object.memories
+        .map((memory) => ({
+          title: memory.title.trim(),
+          content: memory.content.trim(),
+        }))
+        .filter((memory) => memory.title && memory.content)
+        .filter(
+          (memory) =>
+            !memories.some(
+              (existingMemory) =>
+                existingMemory.title === memory.title &&
+                existingMemory.content === memory.content
+            )
+        );
+
+      console.log("newMemories", newMemories);
+
+      if (newMemories.length === 0) {
+        return;
+      }
+
+      const latestMemories = await loadMemories();
+      const memoriesToCreate = newMemories.filter(
+        (memory) =>
+          !latestMemories.some(
+            (existingMemory) =>
+              existingMemory.title === memory.title &&
+              existingMemory.content === memory.content
+          )
+      );
+
+      if (memoriesToCreate.length === 0) {
+        return;
+      }
+
+      const createdAt = new Date().toISOString();
+      await saveMemories([
+        ...latestMemories,
+        ...memoriesToCreate.map((memory) => ({
+          id: generateId(),
+          title: memory.title,
+          content: memory.content,
+          createdAt,
+          updatedAt: createdAt,
+        })),
+      ]);
     },
   });
 

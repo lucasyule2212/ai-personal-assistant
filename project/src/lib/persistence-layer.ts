@@ -179,7 +179,7 @@ export async function loadMemories(): Promise<DB.Memory[]> {
 /**
  * Save all memories to the JSON file
  */
-async function saveMemories(memories: DB.Memory[]): Promise<void> {
+export async function saveMemories(memories: DB.Memory[]): Promise<void> {
   await ensureDataDirectory();
   const chats = await loadChats();
   const data: DB.PersistenceData = { chats, memories };
