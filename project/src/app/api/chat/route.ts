@@ -9,12 +9,14 @@ import {
   updateMemory,
   updateChatTitle,
 } from "@/lib/persistence-layer";
+import { searchMemories } from "@/app/memory-search";
 import { google } from "@ai-sdk/google";
 import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
+  generateObject,
   InferUITools,
   safeValidateUIMessages,
   stepCountIs,
@@ -40,6 +42,7 @@ export type MyMessage = UIMessage<
 >;
 
 const MEMORY_TITLE_MAX_LENGTH = 60;
+const MEMORIES_TO_INCLUDE = 4;
 
 const toStoredMemory = (memory: string) => {
   const normalizedMemory = memory.replace(/\s+/g, " ").trim();
@@ -183,8 +186,45 @@ export async function POST(req: Request) {
   }
 
   const messages = validatedMessagesResult.data;
-  const memories = await loadMemories();
-  const memoriesText = memories.map(formatMemory).join("\n\n");
+
+  const queryRewriterResult = await generateObject({
+    model: google("gemini-2.5-flash"),
+    system: `You are a helpful memory search assistant.
+Generate search inputs for a memory retrieval system so it can find the most relevant stored user memories for the current conversation.
+Return:
+- keywords for exact keyword matching
+- searchQuery for semantic similarity matching`,
+    schema: z.object({
+      keywords: z
+        .array(z.string())
+        .describe(
+          "Keywords for exact memory lookup. Include direct terms, variants, and specific nouns when useful."
+        ),
+      searchQuery: z
+        .string()
+        .describe(
+          "A concise semantic search query describing the information the assistant should retrieve from memory."
+        ),
+    }),
+    messages: convertToModelMessages(messages),
+  });
+
+  console.dir(
+    { memoryQuery: queryRewriterResult.object },
+    { depth: null }
+  );
+
+  const foundMemories = await searchMemories({
+    searchQuery: queryRewriterResult.object.searchQuery,
+    keywordsForBM25: queryRewriterResult.object.keywords,
+  });
+
+  const memoriesText = foundMemories
+    .slice(0, MEMORIES_TO_INCLUDE)
+    .map((memory) => formatMemory(memory.memory))
+    .join("\n\n");
+
+  console.log("Retrieved memories:\n", memoriesText || "No relevant memories.");
 
   let chat = await getChat(chatId);
   const mostRecentMessage = messages[messages.length - 1];
@@ -241,7 +281,7 @@ You are an email assistant that helps users find and understand information from
 </task-context>
 
 <memories>
-${memoriesText || "No stored memories yet."}
+${memoriesText || "No relevant stored memories were retrieved for this conversation."}
 </memories>
 
 <rules>
