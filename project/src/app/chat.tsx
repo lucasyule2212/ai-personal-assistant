@@ -65,6 +65,9 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
         router.refresh();
       }
     },
+    onFinish: () => {
+      router.refresh();
+    },
     generateId: () => crypto.randomUUID(),
   });
 

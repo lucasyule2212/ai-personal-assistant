@@ -1,11 +1,7 @@
 import {
   appendToChatMessages,
   createChat,
-  deleteMemory,
   getChat,
-  loadMemories,
-  saveMemories,
-  updateMemory,
   updateChatTitle,
 } from "@/lib/persistence-layer";
 import { memoryToText, searchMemories } from "@/app/memory-search";
@@ -14,16 +10,14 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
-  generateId,
   InferUITools,
   safeValidateUIMessages,
   stepCountIs,
   streamText,
-  tool,
   UIMessage,
 } from "ai";
-import { z } from "zod";
 import { filterEmailsTool } from "./filter-tool";
+import { extractAndUpdateMemories } from "./extract-memories";
 import { generateTitleForChat } from "./generate-title";
 import { getEmailsTool } from "./get-emails-tool";
 import { searchTool } from "./search-tool";
@@ -39,122 +33,12 @@ export type MyMessage = UIMessage<
   InferUITools<ReturnType<typeof getTools>>
 >;
 
-const MEMORY_TITLE_MAX_LENGTH = 60;
 const MEMORIES_TO_USE = 3;
-
-const toStoredMemory = (memory: string) => {
-  const normalizedMemory = memory.replace(/\s+/g, " ").trim();
-  const firstSentence = normalizedMemory.split(/[.!?]/, 1)[0]?.trim();
-  const title = (firstSentence || normalizedMemory).slice(
-    0,
-    MEMORY_TITLE_MAX_LENGTH
-  );
-
-  return {
-    title,
-    content: normalizedMemory,
-  };
-};
-
-const manageMemoriesTool = tool({
-  description:
-    "Manage durable user memories. Call this when the user shares lasting personal details, changes or contradicts earlier facts, or explicitly asks you to remember or forget something.",
-  inputSchema: z.object({
-    updates: z
-      .array(
-        z.object({
-          id: z
-            .string()
-            .describe("The ID of the existing memory that should be updated."),
-          memory: z
-            .string()
-            .describe(
-              "The new memory text that should replace the existing one."
-            ),
-        })
-      )
-      .default([]),
-    deletions: z
-      .array(z.string())
-      .describe(
-        "Memory IDs to delete because they are outdated, incorrect, or no longer relevant."
-      )
-      .default([]),
-    additions: z
-      .array(z.string())
-      .describe(
-        "New durable memory strings to add for the user when they share important long-term information."
-      )
-      .default([]),
-  }),
-  execute: async ({ updates, deletions, additions }) => {
-    const normalizedUpdates = updates
-      .map((update) => ({
-        id: update.id.trim(),
-        memory: update.memory.trim(),
-      }))
-      .filter((update) => update.id && update.memory);
-    const normalizedDeletions = deletions
-      .map((deletion) => deletion.trim())
-      .filter(Boolean);
-    const normalizedAdditions = [
-      ...new Set(additions.map((memory) => memory.trim())),
-    ].filter(Boolean);
-
-    console.log("Memory tool called:");
-    console.log("Updates:", normalizedUpdates);
-    console.log("Deletions:", normalizedDeletions);
-    console.log("Additions:", normalizedAdditions);
-
-    const filteredDeletions = normalizedDeletions.filter(
-      (deletion) => !normalizedUpdates.some((update) => update.id === deletion)
-    );
-
-    for (const update of normalizedUpdates) {
-      await updateMemory(update.id, toStoredMemory(update.memory));
-    }
-
-    for (const deletion of filteredDeletions) {
-      await deleteMemory(deletion);
-    }
-
-    if (normalizedAdditions.length > 0) {
-      const latestMemories = await loadMemories();
-      const existingMemoryContents = new Set(
-        latestMemories.map((memory) => memory.content)
-      );
-      const now = new Date().toISOString();
-      const memoriesToCreate = normalizedAdditions
-        .filter((memory) => !existingMemoryContents.has(memory))
-        .map((memory) => {
-          const storedMemory = toStoredMemory(memory);
-
-          return {
-            id: generateId(),
-            title: storedMemory.title,
-            content: storedMemory.content,
-            createdAt: now,
-            updatedAt: now,
-          };
-        });
-
-      if (memoriesToCreate.length > 0) {
-        await saveMemories([...latestMemories, ...memoriesToCreate]);
-      }
-    }
-
-    return {
-      success: true,
-      message: `Updated ${normalizedUpdates.length} memories, deleted ${filteredDeletions.length} memories, added ${normalizedAdditions.length} memories.`,
-    };
-  },
-});
 
 const getTools = (messages: UIMessage[]) => ({
   search: searchTool(messages),
   filterEmails: filterEmailsTool,
   getEmails: getEmailsTool,
-  manageMemories: manageMemoriesTool,
 });
 
 export async function POST(req: Request) {
@@ -241,7 +125,7 @@ You are an email assistant that helps users find and understand information from
 </task-context>
 
 <rules>
-- You have FOUR tools available: 'search', 'filterEmails', 'getEmails', and 'manageMemories'
+- You have THREE tools available: 'search', 'filterEmails', and 'getEmails'
 - Follow this multi-step workflow for token efficiency:
 
   STEP 1 - Browse metadata:
@@ -274,15 +158,18 @@ You are an email assistant that helps users find and understand information from
 - NEVER answer from your training data - always use tools first
 - If the first query doesn't find enough information, try different approaches or tools
 - Only after using tools should you formulate your answer based on the results
-- Use 'manageMemories' when the user shares durable personal information, changes a previous fact or preference, or explicitly asks you to remember or forget something
-- Skip 'manageMemories' for casual small talk, temporary requests, and situational details that are unlikely to matter later
-- It is fine to batch memory updates from multiple recent turns into a single 'manageMemories' call when that is more efficient
 </rules>
 
 <memories>
 Here are some memories that may be relevant to the conversation:
 
-${memories.map((memory) => `- ${memoryToText(memory.item)}`).join("\n")}
+${memories
+  .map((memory) => [
+    `<memory id="${memory.item.id}">`,
+    memoryToText(memory.item),
+    "</memory>",
+  ])
+  .join("\n")}
 </memories>
 
 <the-ask>
@@ -305,6 +192,10 @@ Here is the user's question. Follow the multi-step workflow above to efficiently
     generateId: () => crypto.randomUUID(),
     onFinish: async ({ responseMessage }) => {
       await appendToChatMessages(chatId, [responseMessage]);
+      await extractAndUpdateMemories({
+        messages: [...messages, responseMessage],
+        memories: memories.map((memory) => memory.item),
+      });
     },
   });
 
