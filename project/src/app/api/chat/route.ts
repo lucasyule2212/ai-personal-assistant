@@ -1,7 +1,6 @@
 import {
   appendToChatMessages,
   createChat,
-  DB,
   deleteMemory,
   getChat,
   loadMemories,
@@ -9,7 +8,7 @@ import {
   updateMemory,
   updateChatTitle,
 } from "@/lib/persistence-layer";
-import { searchMemories } from "@/app/memory-search";
+import { memoryToText, searchMemories } from "@/app/memory-search";
 import { google } from "@ai-sdk/google";
 import {
   convertToModelMessages,
@@ -41,7 +40,7 @@ export type MyMessage = UIMessage<
 >;
 
 const MEMORY_TITLE_MAX_LENGTH = 60;
-const MEMORIES_TO_INCLUDE = 4;
+const MEMORIES_TO_USE = 3;
 
 const toStoredMemory = (memory: string) => {
   const normalizedMemory = memory.replace(/\s+/g, " ").trim();
@@ -158,16 +157,6 @@ const getTools = (messages: UIMessage[]) => ({
   manageMemories: manageMemoriesTool,
 });
 
-const formatMemory = (memory: DB.Memory) => {
-  return [
-    `ID: ${memory.id}`,
-    `Title: ${memory.title}`,
-    `Content: ${memory.content}`,
-    `Created At: ${memory.createdAt}`,
-    `Updated At: ${memory.updatedAt}`,
-  ].join("\n");
-};
-
 export async function POST(req: Request) {
   const body: {
     messages: UIMessage[];
@@ -197,16 +186,16 @@ export async function POST(req: Request) {
     });
   }
 
-  const foundMemories = await searchMemories({
-    messages,
-  });
+  const allMemories = await searchMemories({ messages });
+  const memories = allMemories.slice(0, MEMORIES_TO_USE);
 
-  const memoriesText = foundMemories
-    .slice(0, MEMORIES_TO_INCLUDE)
-    .map((memory) => formatMemory(memory.item))
-    .join("\n\n");
-
-  console.log("Retrieved memories:\n", memoriesText || "No relevant memories.");
+  console.log(
+    "Memory scores:",
+    memories.map((memory) => ({
+      title: memory.item.title,
+      score: memory.score,
+    }))
+  );
 
   let chat = await getChat(chatId);
 
@@ -251,10 +240,6 @@ export async function POST(req: Request) {
 You are an email assistant that helps users find and understand information from their emails.
 </task-context>
 
-<memories>
-${memoriesText || "No relevant stored memories were retrieved for this conversation."}
-</memories>
-
 <rules>
 - You have FOUR tools available: 'search', 'filterEmails', 'getEmails', and 'manageMemories'
 - Follow this multi-step workflow for token efficiency:
@@ -293,6 +278,12 @@ ${memoriesText || "No relevant stored memories were retrieved for this conversat
 - Skip 'manageMemories' for casual small talk, temporary requests, and situational details that are unlikely to matter later
 - It is fine to batch memory updates from multiple recent turns into a single 'manageMemories' call when that is more efficient
 </rules>
+
+<memories>
+Here are some memories that may be relevant to the conversation:
+
+${memories.map((memory) => `- ${memoryToText(memory.item)}`).join("\n")}
+</memories>
 
 <the-ask>
 Here is the user's question. Follow the multi-step workflow above to efficiently find and retrieve the information.
