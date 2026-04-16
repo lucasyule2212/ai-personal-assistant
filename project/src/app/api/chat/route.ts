@@ -16,7 +16,6 @@ import {
   createUIMessageStream,
   createUIMessageStreamResponse,
   generateId,
-  generateObject,
   InferUITools,
   safeValidateUIMessages,
   stepCountIs,
@@ -186,47 +185,6 @@ export async function POST(req: Request) {
   }
 
   const messages = validatedMessagesResult.data;
-
-  const queryRewriterResult = await generateObject({
-    model: google("gemini-2.5-flash"),
-    system: `You are a helpful memory search assistant.
-Generate search inputs for a memory retrieval system so it can find the most relevant stored user memories for the current conversation.
-Return:
-- keywords for exact keyword matching
-- searchQuery for semantic similarity matching`,
-    schema: z.object({
-      keywords: z
-        .array(z.string())
-        .describe(
-          "Keywords for exact memory lookup. Include direct terms, variants, and specific nouns when useful."
-        ),
-      searchQuery: z
-        .string()
-        .describe(
-          "A concise semantic search query describing the information the assistant should retrieve from memory."
-        ),
-    }),
-    messages: convertToModelMessages(messages),
-  });
-
-  console.dir(
-    { memoryQuery: queryRewriterResult.object },
-    { depth: null }
-  );
-
-  const foundMemories = await searchMemories({
-    searchQuery: queryRewriterResult.object.searchQuery,
-    keywordsForBM25: queryRewriterResult.object.keywords,
-  });
-
-  const memoriesText = foundMemories
-    .slice(0, MEMORIES_TO_INCLUDE)
-    .map((memory) => formatMemory(memory.memory))
-    .join("\n\n");
-
-  console.log("Retrieved memories:\n", memoriesText || "No relevant memories.");
-
-  let chat = await getChat(chatId);
   const mostRecentMessage = messages[messages.length - 1];
 
   if (!mostRecentMessage) {
@@ -238,6 +196,19 @@ Return:
       status: 400,
     });
   }
+
+  const foundMemories = await searchMemories({
+    messages,
+  });
+
+  const memoriesText = foundMemories
+    .slice(0, MEMORIES_TO_INCLUDE)
+    .map((memory) => formatMemory(memory.item))
+    .join("\n\n");
+
+  console.log("Retrieved memories:\n", memoriesText || "No relevant memories.");
+
+  let chat = await getChat(chatId);
 
   const stream = createUIMessageStream<MyMessage>({
     execute: async ({ writer }) => {
