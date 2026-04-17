@@ -4,6 +4,7 @@ import {
   getChat,
   updateChatTitle,
 } from "@/lib/persistence-layer";
+import { searchMessages } from "@/app/message-search";
 import { memoryToText, searchMemories } from "@/app/memory-search";
 import { google } from "@ai-sdk/google";
 import {
@@ -37,6 +38,8 @@ export type MyMessage = UIMessage<
 >;
 
 const MEMORIES_TO_USE = 3;
+const MESSAGE_HISTORY_LENGTH = 10;
+const OLD_MESSAGES_TO_USE = 10;
 
 const getTools = (messages: UIMessage[]) => ({
   search: searchTool(messages),
@@ -52,9 +55,13 @@ export async function POST(req: Request) {
 
   const chatId = body.id;
   let chat = await getChat(chatId);
+  const recentMessages = [...(chat?.messages ?? []), body.message].slice(
+    -MESSAGE_HISTORY_LENGTH
+  );
+  const olderMessages = chat?.messages.slice(0, -MESSAGE_HISTORY_LENGTH);
 
   const validatedMessagesResult = await safeValidateUIMessages<MyMessage>({
-    messages: [...(chat?.messages ?? []), body.message],
+    messages: recentMessages,
   });
 
   if (!validatedMessagesResult.success) {
@@ -76,6 +83,16 @@ export async function POST(req: Request) {
 
   const allMemories = await searchMemories({ messages });
   const memories = allMemories.slice(0, MEMORIES_TO_USE);
+  const oldMessagesToUse = await searchMessages({
+    recentMessages: messages,
+    olderMessages: olderMessages ?? [],
+  }).then((results) =>
+    results
+      .slice(0, OLD_MESSAGES_TO_USE)
+      .sort((a, b) => b.score - a.score)
+      .map((result) => result.item)
+  );
+  const messageHistoryForLLM = [...oldMessagesToUse, ...messages];
 
   console.log(
     "Memory scores:",
@@ -84,6 +101,7 @@ export async function POST(req: Request) {
       score: memory.score,
     }))
   );
+  console.log("oldMessagesToUse", oldMessagesToUse.length);
 
   const stream = createUIMessageStream<MyMessage>({
     execute: async ({ writer }) => {
@@ -120,7 +138,7 @@ export async function POST(req: Request) {
 
       const result = streamText({
         model: google("gemini-2.5-flash"),
-        messages: convertToModelMessages(messages),
+        messages: convertToModelMessages(messageHistoryForLLM),
         system: `
 <task-context>
 You are a personal assistant to ${USER_FIRST_NAME} ${USER_LAST_NAME}. You help with general tasks, questions, and can access ${USER_FIRST_NAME}'s email when needed.
@@ -180,7 +198,7 @@ ${memories
 Here is the user's request. For general questions and conversations, respond naturally. For email-related queries, use the tools and multi-step workflow above.
 </the-ask>
         `,
-        tools: getTools(messages),
+        tools: getTools(messageHistoryForLLM),
         stopWhen: stepCountIs(5),
       });
 
