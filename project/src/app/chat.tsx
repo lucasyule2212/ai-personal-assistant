@@ -37,6 +37,7 @@ import {
 } from "@/components/ai-elements/sources";
 import { Tool, ToolContent, ToolHeader } from "@/components/ai-elements/tool";
 import { DB } from "@/lib/persistence-layer";
+import { DefaultChatTransport } from "ai";
 import { useChat } from "@ai-sdk/react";
 import { CopyIcon, RefreshCcwIcon } from "lucide-react";
 import { useSearchParams, useRouter } from "next/navigation";
@@ -69,6 +70,18 @@ export const Chat = (props: { chat: DB.Chat | null }) => {
       router.refresh();
     },
     generateId: () => crypto.randomUUID(),
+    transport: new DefaultChatTransport({
+      prepareSendMessagesRequest: (request) => {
+        const latestMessage = request.messages[request.messages.length - 1];
+
+        return {
+          body: {
+            id: request.body?.id,
+            message: latestMessage,
+          },
+        };
+      },
+    }),
   });
 
   const ref = useFocusWhenNoChatIdPresent(chatIdFromSearchParams);

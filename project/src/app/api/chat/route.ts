@@ -46,14 +46,15 @@ const getTools = (messages: UIMessage[]) => ({
 
 export async function POST(req: Request) {
   const body: {
-    messages: UIMessage[];
+    message: MyMessage;
     id: string;
   } = await req.json();
 
   const chatId = body.id;
+  let chat = await getChat(chatId);
 
   const validatedMessagesResult = await safeValidateUIMessages<MyMessage>({
-    messages: body.messages,
+    messages: [...(chat?.messages ?? []), body.message],
   });
 
   if (!validatedMessagesResult.success) {
@@ -83,8 +84,6 @@ export async function POST(req: Request) {
       score: memory.score,
     }))
   );
-
-  let chat = await getChat(chatId);
 
   const stream = createUIMessageStream<MyMessage>({
     execute: async ({ writer }) => {
