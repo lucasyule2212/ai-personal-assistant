@@ -1,3 +1,4 @@
+import { DB } from "@/lib/persistence-layer";
 import { MyMessage } from "./api/chat/route";
 
 export const messagePartsToText = (parts: MyMessage["parts"]) => {
@@ -28,4 +29,21 @@ export const messageHistoryToQuery = (messages: MyMessage[]) => {
   const query = [...messages, mostRecentMessage].map(messageToText).join("\n");
 
   return query;
+};
+
+export const chatToText = (chat: DB.Chat): string => {
+  const frontmatter = [`Title: ${chat.title}`];
+
+  const summary = chat.llmSummary
+    ? [
+        `Summary: ${chat.llmSummary.summary}`,
+        `What Worked Well: ${chat.llmSummary.whatWorkedWell}`,
+        `What To Avoid: ${chat.llmSummary.whatToAvoid}`,
+        `Tags: ${chat.llmSummary.tags.join(", ")}`,
+      ]
+    : [];
+
+  const messages = chat.messages.map(messageToText).join("\n");
+
+  return [...frontmatter, ...summary, messages].join("\n");
 };
