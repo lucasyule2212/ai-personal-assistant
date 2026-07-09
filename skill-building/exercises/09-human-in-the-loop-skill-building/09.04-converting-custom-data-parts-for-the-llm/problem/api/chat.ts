@@ -45,11 +45,35 @@ export type MyMessage = UIMessage<
 const annotateMessageHistory = (
   messages: MyMessage[],
 ): ModelMessage[] => {
-  // TODO: Use convertDataPart in the second parameter of convertToModelMessages
-  // to allow the model to read the custom data parts.
-  // Without this, the model will only see the text parts/tool calls.
-  const modelMessages =
-    convertToModelMessages<MyMessage>(messages);
+  const modelMessages = convertToModelMessages<MyMessage>(
+    messages,
+    {
+      convertDataPart(part) {
+        if (part.type === 'data-approval-request') {
+          const { to, subject, content } = part.data.tool;
+
+          return {
+            type: 'text',
+            text: `The assistant requested to send an email: To: ${to}, Subject: ${subject}, Content: ${content}`,
+          };
+        }
+
+        if (part.type === 'data-approval-decision') {
+          if (part.data.decision.type === 'approve') {
+            return {
+              type: 'text',
+              text: 'The user approved the email request.',
+            };
+          }
+
+          return {
+            type: 'text',
+            text: `The user rejected the email request: ${part.data.decision.reason}`,
+          };
+        }
+      },
+    },
+  );
 
   return modelMessages;
 };
