@@ -10,28 +10,27 @@ import {
 import { z } from 'zod';
 
 const tools = {
-  // TODO: Implement the askForClarification tool
-  // This tool should be called when the agent needs more
-  // information from the user to complete a request. For
-  // example, if the user says "Book a flight to Paris" but
-  // doesn't specify dates, origin, or passengers, the
-  // agent should call this but doesn't specify dates,
-  // origin, or passengers, the agent should call this
-  // tool to ask clarifying questions.
-  //
-  // The schema should include:
-  // - questions: An array of question objects, where
-  // each object has:
-  //   - question: The question to ask (string)
-  //   - field: The field name this question is about (string)
-  //   - options: An array of pre-filled answer choices
-  //     (array of strings)
-  //
   askForClarification: tool({
-    // TODO: Write a description for the tool
-    description: '',
+    description:
+      'Ask the user for critical information missing from an action request. Provide pre-filled answer options for each question when possible.',
     inputSchema: z.object({
-      // TODO: Add the schema here
+      questions: z
+        .array(
+          z.object({
+            question: z
+              .string()
+              .describe('The question to ask the user'),
+            field: z
+              .string()
+              .describe('The field name this question is about'),
+            options: z
+              .array(z.string())
+              .describe(
+                'Pre-filled answer choices for the user to select from',
+              ),
+          }),
+        )
+        .describe('The clarifying questions to ask the user'),
     }),
     execute: async () => {
       return 'askForClarification tool called';
@@ -392,10 +391,18 @@ export const runAgent = (
     messages: convertToModelMessages(messages),
     tools,
     stopWhen,
-    // TODO: Update the system prompt to instruct the agent to use the
-    // askForClarification tool when the user's request is missing
-    // critical information needed to complete the task
-    system: `Today's date is ${new Date().toISOString().split('T')[0]}.`,
+    system: `Today's date is ${new Date().toISOString().split('T')[0]}.
+
+When an action request is missing critical information, call askForClarification before calling any other tool. Do not guess or invent missing values. Ask only about the missing fields, and include useful pre-filled options when possible.
+
+For example:
+
+- For "Book a flight to Paris", ask for the departure city, departure date, and passenger count using the fields "from", "departDate", and "passengers".
+- For "Send John an email", ask for John's email address, the subject, and the body using the fields "to", "subject", and "body".
+- For "Create an invoice", ask for the client name, email, line items, and due date using the fields "clientName", "clientEmail", "items", and "dueDate".
+- For "Search my calendar", ask for a date, title, or location before calling searchCalendarEvents. Do not run an unscoped calendar search.
+
+Use askForClarification only when information required to complete an action is missing. Do not use it for requests that already contain the necessary details or for general informational questions.`,
   });
 
   return result;

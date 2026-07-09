@@ -6,29 +6,45 @@ import { runAgent } from './agent.ts';
 import { wrapAISDKModel } from 'evalite/ai-sdk';
 
 evalite('Ask For Clarification Evaluation', {
-  // TODO: Add 8-10 test cases with incomplete requests that should trigger
-  // the askForClarification tool. Each case should be missing critical
-  // information needed to complete the action.
   data: [
-    // Flight booking with missing critical details
     {
       input: createUIMessageFixture('Book a flight to Paris'),
     },
-    // Email with missing recipient details
     {
       input: createUIMessageFixture('Send John an email'),
     },
-    // Invoice creation with no details
     {
       input: createUIMessageFixture(
         'Create an invoice for the client',
       ),
     },
-    // TODO: add more test cases here
+    {
+      input: createUIMessageFixture('Set a reminder'),
+    },
+    {
+      input: createUIMessageFixture('Translate this text'),
+    },
+    {
+      input: createUIMessageFixture('Check the weather'),
+    },
+    {
+      input: createUIMessageFixture(
+        'Schedule a social media post',
+      ),
+    },
+    {
+      input: createUIMessageFixture('Create a task for me'),
+    },
+    {
+      input: createUIMessageFixture('Search my calendar'),
+    },
+    {
+      input: createUIMessageFixture('Compress a file'),
+    },
   ],
   task: async (input) => {
     const result = runAgent(
-      wrapAISDKModel(google('gemini-2.5-flash')),
+      wrapAISDKModel(google('gemini-3.1-flash-lite')),
       input,
       stepCountIs(1),
     );
@@ -53,10 +69,12 @@ evalite('Ask For Clarification Evaluation', {
       description:
         'The agent called the askForClarification tool',
       scorer: ({ output }) => {
-        // TODO: Implement the scorer
-        // Return 1 if askForClarification was called, 0 otherwise
-        // Hint: Check if any tool in output.toolCalls has toolName === 'askForClarification'
-        return 0;
+        return output.toolCalls.some(
+          (toolCall) =>
+            toolCall.toolName === 'askForClarification',
+        )
+          ? 1
+          : 0;
       },
     },
   ],

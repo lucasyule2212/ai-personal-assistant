@@ -2,18 +2,17 @@ import { stepCountIs } from 'ai';
 import { evalite } from 'evalite';
 import { runAgent } from './agent.ts';
 import { google } from '@ai-sdk/google';
-import { openai } from '@ai-sdk/openai';
 import { createUIMessageFixture } from '#shared/create-ui-message-fixture.ts';
 import { wrapAISDKModel } from 'evalite/ai-sdk';
 
 evalite.each([
   {
-    name: 'Gemini 2.5 Flash Lite',
-    input: google('gemini-2.5-flash-lite'),
+    name: 'Gemini 3.1 Flash Lite',
+    input: google('gemini-3.1-flash-lite'),
   },
   {
-    name: 'GPT-4.1 Mini',
-    input: openai('gpt-4.1-mini'),
+    name: 'Gemini 3 Flash Preview',
+    input: google('gemini-3-flash-preview'),
   },
 ])('Agent Tool Call Evaluation - Adversarial Inputs', {
   data: [
@@ -47,17 +46,64 @@ evalite.each([
       ),
       expected: { tool: 'setReminder' },
     },
-    // TODO: Add 5-10 adversarial test cases to challenge the agent
-    // Ideas for adversarial inputs:
-    // - Ambiguous requests that could match multiple tools (e.g., "organize my schedule")
-    // - Very long, complex requests with multiple potential actions
-    // - Requests with missing critical information (e.g., "book a flight" without dates/locations)
-    // - Conversational input with no action needed (e.g., "thanks!")
-    // - Questions about tools vs. actual tool requests (e.g., "how do I create a backup?")
-    // - Overlapping tool functionality (e.g., "save this for later" - task? reminder? backup?)
-    // - Hypothetical scenarios (e.g., "what would happen if...")
-    // - Partial information requiring clarification
-    // For cases where NO tool should be called, use: expected: { tool: null }
+    {
+      input: createUIMessageFixture(
+        'I need to organize my schedule',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'I need to prepare for a big presentation next week. Can you help me create a spreadsheet to track all the tasks I need to complete, set reminders for the key milestones, search for the latest industry data online, and also check what meetings I have scheduled that might conflict with my preparation time?',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'Book a flight for next month',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'Thanks for your help earlier!',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'Can you explain how to create a backup of my files?',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'I want to save this information for later',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'Send an urgent email but make sure to translate it to Spanish first',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        'What would happen if I sent an email to the whole company?',
+      ),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture('Create a reminder'),
+      expected: { tool: null },
+    },
+    {
+      input: createUIMessageFixture(
+        "What's the difference between economy and business class on flights?",
+      ),
+      expected: { tool: null },
+    },
   ],
   task: async (messages, model) => {
     const result = runAgent(
