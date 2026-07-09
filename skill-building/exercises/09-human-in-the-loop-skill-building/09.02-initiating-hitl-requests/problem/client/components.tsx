@@ -1,6 +1,9 @@
 import React from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { MyMessage } from '../api/chat.ts';
+import type {
+  MyMessage,
+  ToolRequiringApproval,
+} from '../api/chat.ts';
 
 function cn(...classes: (string | boolean | undefined)[]) {
   return classes.filter(Boolean).join(' ');
@@ -32,9 +35,16 @@ export const Wrapper = (props: {
 export const Message = ({
   role,
   parts,
+  onToolDecision,
+  toolIdsWithDecisionsMade,
 }: {
   role: string;
   parts: MyMessage['parts'];
+  onToolDecision: (
+    tool: ToolRequiringApproval,
+    decision: 'approve' | 'reject',
+  ) => void;
+  toolIdsWithDecisionsMade: Set<string>;
 }) => {
   const isUser = role === 'user';
 
@@ -59,6 +69,9 @@ export const Message = ({
             }
 
             if (part.type === 'data-approval-request') {
+              const hasDecisionBeenMade =
+                toolIdsWithDecisionsMade.has(part.data.tool.id);
+
               return (
                 <div key={part.id} className="mb-4">
                   <h2 className="text-sm font-medium mb-2">
@@ -90,6 +103,32 @@ export const Message = ({
                       </div>
                     </div>
                   </div>
+                  {hasDecisionBeenMade ? null : (
+                    <div className="flex gap-2">
+                      <button
+                        className="bg-primary text-primary-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-primary/90 transition-colors"
+                        onClick={() =>
+                          onToolDecision(
+                            part.data.tool,
+                            'approve',
+                          )
+                        }
+                      >
+                        Approve
+                      </button>
+                      <button
+                        className="bg-destructive text-destructive-foreground px-4 py-2 rounded-lg text-sm font-medium hover:bg-destructive/90 transition-colors"
+                        onClick={() =>
+                          onToolDecision(
+                            part.data.tool,
+                            'reject',
+                          )
+                        }
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             }
@@ -107,11 +146,13 @@ export const ChatInput = ({
   onChange,
   onSubmit,
   disabled,
+  isGivingFeedback,
 }: {
   input: string;
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   onSubmit: (e: React.FormEvent) => void;
   disabled?: boolean;
+  isGivingFeedback: boolean;
 }) => (
   <div className="flex-shrink-0 w-full border-t border-border bg-background/80 backdrop-blur-sm">
     <div className="max-w-3xl mx-auto p-4">
@@ -121,7 +162,9 @@ export const ChatInput = ({
           placeholder={
             disabled
               ? 'Please handle tool calls first...'
-              : 'Ask a question...'
+              : isGivingFeedback
+                ? 'Please give feedback...'
+                : 'Ask a question...'
           }
           onChange={onChange}
           disabled={disabled}

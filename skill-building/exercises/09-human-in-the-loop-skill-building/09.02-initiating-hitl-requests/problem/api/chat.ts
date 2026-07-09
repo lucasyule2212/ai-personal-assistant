@@ -18,11 +18,24 @@ export type ToolRequiringApproval = {
   subject: string;
 };
 
+export type ToolApprovalDecision =
+  | {
+      type: 'approve';
+    }
+  | {
+      type: 'reject';
+      reason: string;
+    };
+
 export type MyMessage = UIMessage<
   unknown,
   {
     'approval-request': {
       tool: ToolRequiringApproval;
+    };
+    'approval-decision': {
+      toolId: string;
+      decision: ToolApprovalDecision;
     };
   }
 >;
