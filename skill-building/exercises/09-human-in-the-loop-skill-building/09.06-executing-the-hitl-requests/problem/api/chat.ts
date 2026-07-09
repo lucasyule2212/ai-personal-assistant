@@ -82,8 +82,13 @@ const annotateMessageHistory = (
           };
         }
 
-        // TODO: add a case for data-approval-result for after the tool
-        // has been executed.
+        if (part.type === 'data-approval-result') {
+          return {
+            type: 'text',
+            text: `The tool was performed: ${part.data.output.message}`,
+          };
+        }
+
         return part;
       },
     },
@@ -136,12 +141,27 @@ export const POST = async (req: Request): Promise<Response> => {
 
       for (const { tool, decision } of hitlResult) {
         if (decision.type === 'approve') {
-          // TODO: the user has approved the tool, so
-          // we should send the email!
-          //
-          // TODO: we should also add a data-approval-result
-          // part to the messages array, and write it to
-          // the frontend.
+          sendEmail({
+            to: tool.to,
+            subject: tool.subject,
+            content: tool.content,
+          });
+
+          const messagePart = {
+            type: 'data-approval-result' as const,
+            data: {
+              toolId: tool.id,
+              output: {
+                type: tool.type,
+                message: 'Email sent!',
+              },
+            },
+          };
+
+          writer.write(messagePart);
+          messagesAfterHitl[
+            messagesAfterHitl.length - 1
+          ]!.parts.push(messagePart);
         }
       }
 
