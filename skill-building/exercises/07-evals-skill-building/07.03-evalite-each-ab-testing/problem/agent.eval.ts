@@ -5,12 +5,22 @@ import { google } from '@ai-sdk/google';
 import { createUIMessageFixture } from '#shared/create-ui-message-fixture.ts';
 import { wrapAISDKModel } from 'evalite/ai-sdk';
 
-// TODO: Add more models to compare different LLM performance
-// Try: 'gemini-2.5-flash-lite', GPT-4o, Claude, etc.
 evalite.each([
   {
-    name: 'Gemini 2.5 Flash Lite',
-    input: google('gemini-2.5-flash-lite'),
+    name: 'Gemini 3.1 Flash Lite',
+    input: google('gemini-3.1-flash-lite'),
+  },
+  {
+    name: 'Gemini 3 Flash Preview',
+    input: google('gemini-3-flash-preview'),
+  },
+  {
+    name: 'Gemini 3.5 Flash',
+    input: google('gemini-3.5-flash'),
+  },
+  {
+    name: 'Gemini 3.1 Pro Preview',
+    input: google('gemini-3.1-pro-preview'),
   },
 ])('Agent Tool Call Evaluation', {
   data: [
