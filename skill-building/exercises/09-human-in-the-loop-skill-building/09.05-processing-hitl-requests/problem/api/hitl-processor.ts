@@ -28,25 +28,32 @@ export const findDecisionsToProcess = (opts: {
     return [];
   }
 
-  // TODO: Get all the tools requiring approval from the assistant message
-  // and return them in an array.
-  const tools: ToolRequiringApproval[] = TODO;
+  const tools = mostRecentAssistantMessage.parts
+    .filter((part) => part.type === 'data-approval-request')
+    .map((part) => part.data.tool);
 
-  // TODO: Get all the decisions that the user has made
-  // and return them in a map.
-  const decisions: Map<string, ToolApprovalDecision> = TODO;
+  const decisions = new Map(
+    mostRecentUserMessage.parts
+      .filter((part) => part.type === 'data-approval-decision')
+      .map((part) => [part.data.toolId, part.data.decision]),
+  );
 
   const decisionsToProcess: HITLDecisionsToProcess[] = [];
 
   for (const tool of tools) {
-    const decision: ToolApprovalDecision | undefined =
-      decisions.get(tool.id);
+    const decision = decisions.get(tool.id);
 
-    // TODO: if the decision is not found, return a HITLError -
-    // the user should make a decision before continuing.
-    //
-    // TODO: if the decision is found, add the tool and
-    // decision to the decisionsToProcess array.
+    if (!decision) {
+      return {
+        message: `No decision found for tool ${tool.id}`,
+        status: 400,
+      };
+    }
+
+    decisionsToProcess.push({
+      tool,
+      decision,
+    });
   }
 
   return decisionsToProcess;

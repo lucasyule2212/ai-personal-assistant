@@ -83,8 +83,17 @@ export const POST = async (req: Request): Promise<Response> => {
 
   const mostRecentUserMessage = messages[messages.length - 1];
 
-  // TODO: return a Response of status 400 if there
-  // is no most recent user message.
+  if (!mostRecentUserMessage) {
+    return new Response('Messages array cannot be empty', {
+      status: 400,
+    });
+  }
+
+  if (mostRecentUserMessage.role !== 'user') {
+    return new Response('Last message must be a user message', {
+      status: 400,
+    });
+  }
 
   // NOTE: assistant messages are allowed to be undefined,
   // since at the very start of the conversation we'll only
