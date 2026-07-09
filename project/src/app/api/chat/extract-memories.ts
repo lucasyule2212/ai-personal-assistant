@@ -6,20 +6,25 @@ import {
 } from "@/lib/persistence-layer";
 import { memoryToText } from "@/app/memory-search";
 import { google } from "@ai-sdk/google";
-import { convertToModelMessages, generateObject } from "ai";
+import {
+  convertToModelMessages,
+  generateObject,
+  LanguageModel,
+} from "ai";
 import { z } from "zod";
 import { MyMessage } from "./route";
 
-export async function extractAndUpdateMemories(opts: {
+export const extractMemoriesInner = async (opts: {
   messages: MyMessage[];
   memories: DB.Memory[];
+  model: LanguageModel;
 }) {
   const filteredMessages = opts.messages.filter(
     (message) => message.role === "user" || message.role === "assistant"
   );
 
   const memoriesResult = await generateObject({
-    model: google("gemini-2.5-flash"),
+    model: opts.model,
     schema: z.object({
       updates: z
         .array(
@@ -82,6 +87,19 @@ Be conservative - only add memories that will genuinely help personalize future 
   });
 
   const { updates, deletions, additions } = memoriesResult.object;
+
+  return { updates, deletions, additions };
+};
+
+export async function extractAndUpdateMemories(opts: {
+  messages: MyMessage[];
+  memories: DB.Memory[];
+}) {
+  const { updates, deletions, additions } = await extractMemoriesInner({
+    messages: opts.messages,
+    memories: opts.memories,
+    model: google("gemini-2.5-flash"),
+  });
 
   const filteredDeletions = deletions.filter(
     (deletion) => !updates.some((update) => update.id === deletion)
