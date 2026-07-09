@@ -3,12 +3,12 @@ import {
   convertToModelMessages,
   createUIMessageStream,
   createUIMessageStreamResponse,
+  hasToolCall,
   stepCountIs,
   streamText,
   type UIMessage,
 } from 'ai';
 import z from 'zod';
-import { sendEmail } from './email-service.ts';
 
 export type ToolRequiringApproval = {
   id: string;
@@ -49,20 +49,25 @@ export const POST = async (req: Request): Promise<Response> => {
               subject: z.string(),
               content: z.string(),
             }),
-            execute: async ({ to, subject, content }) => {
-              // TODO: change this so that it sends a part
-              // of data-approval-request to the writer instead of
-              // sending the email.
-              await sendEmail({ to, subject, content });
+            execute: ({ to, subject, content }) => {
+              writer.write({
+                type: 'data-approval-request',
+                data: {
+                  tool: {
+                    id: crypto.randomUUID(),
+                    type: 'send-email',
+                    to,
+                    subject,
+                    content,
+                  },
+                },
+              });
 
               return 'Requested to send an email';
             },
           },
         },
-        // TODO: we now want a second stop condition - we
-        // want to stop EITHER when the step count is 10,
-        // OR when the agent has sent the sendEmail tool call.
-        stopWhen: [stepCountIs(10)],
+        stopWhen: [stepCountIs(10), hasToolCall('sendEmail')],
       });
 
       writer.merge(streamTextResponse.toUIMessageStream());
