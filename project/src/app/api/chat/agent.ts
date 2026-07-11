@@ -5,6 +5,7 @@ import {
   Experimental_Agent as Agent,
   LanguageModel,
   StopCondition,
+  ToolSet,
   UIMessage,
 } from "ai";
 import type { MyMessage } from "./route";
@@ -27,10 +28,11 @@ export const createAgent = (opts: {
   stopWhen: StopCondition<any>;
   memories: DB.Memory[];
   relatedChats: DB.Chat[];
+  mcpTools: ToolSet;
 }) =>
   new Agent({
     model: opts.model,
-    tools: getTools(opts.messages),
+    tools: { ...getTools(opts.messages), ...opts.mcpTools },
     stopWhen: opts.stopWhen,
     system: `
 <task-context>

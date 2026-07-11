@@ -21,6 +21,7 @@ import {
 import { createAgent, getTools } from "./agent";
 import { extractAndUpdateMemories } from "./extract-memories";
 import { generateTitleForChat } from "./generate-title";
+import { getMCPTools } from "./mcp";
 
 // Allow streaming responses up to 30 seconds
 export const maxDuration = 30;
@@ -127,6 +128,7 @@ export async function POST(req: Request) {
       }
 
       const relatedChats = await searchForRelatedChats(chatId, messages);
+      const mcpTools = await getMCPTools();
 
       const agent = createAgent({
         memories: memories.map((memory) => memory.item),
@@ -134,6 +136,7 @@ export async function POST(req: Request) {
         messages: messageHistoryForLLM,
         model: google("gemini-2.5-flash"),
         stopWhen: stepCountIs(10),
+        mcpTools,
       });
 
       const result = agent.stream({

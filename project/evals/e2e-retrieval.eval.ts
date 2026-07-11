@@ -106,6 +106,7 @@ evalite.each([
       model,
       stopWhen: stepCountIs(10),
       relatedChats: [],
+      mcpTools: {},
     });
 
     const result = await agent.generate({
