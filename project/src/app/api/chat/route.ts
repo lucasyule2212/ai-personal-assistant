@@ -18,6 +18,7 @@ import {
   UIMessage,
 } from "ai";
 import { createAgent, getTools } from "./agent";
+import { filterToolsByApps, parseAppIdsFromMessage } from "./apps-config";
 import { extractAndUpdateMemories } from "./extract-memories";
 import { generateTitleForChat } from "./generate-title";
 import {
@@ -149,11 +150,13 @@ export async function POST(req: Request) {
       }
 
       const relatedChats = await searchForRelatedChats(chatId, messages);
-      const mcpTools = await getMCPTools();
+      const taggedAppIds = parseAppIdsFromMessage(body.message);
+      const allMcpTools = await getMCPTools();
+      const mcpTools = filterToolsByApps(allMcpTools, taggedAppIds);
 
       const messagesWithToolResults = await executeHITLDecisions({
         decisions: hitlResult,
-        mcpTools,
+        mcpTools: allMcpTools,
         writer,
         messages: messageHistoryForLLM,
       });

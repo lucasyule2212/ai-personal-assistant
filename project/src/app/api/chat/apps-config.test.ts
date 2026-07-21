@@ -47,6 +47,9 @@ describe("apps config", () => {
     expect(Object.keys(filterToolsByApps(tools, ["calendar", "docs"]))).toEqual(
       ["google_calendar_find_events", "google_docs_find_a_document"]
     );
+    expect(Object.keys(filterToolsByApps(tools, ["tasks"]))).toEqual([
+      "google_tasks_create_task",
+    ]);
     expect(filterToolsByApps(tools, [])).toEqual({});
     expect(filterToolsByApps(tools, ["unknown"])).toEqual({});
   });
